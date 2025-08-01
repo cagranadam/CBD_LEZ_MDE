@@ -40,7 +40,7 @@ required_packages <- c("readr", "dplyr", "tidyr", "psych", "ggplot2",
                       "cluster", "factoextra", "FactoMineR", "tibble", 
                       "knitr", "DT", "corrplot", "plotly", "scales",
                       "ca", "purrr", "stringr", "forcats", "gridExtra",
-                      "VIM", "mice", "pheatmap", "RColorBrewer")
+                      "VIM", "mice", "pheatmap", "RColorBrewer", "janitor")
 
 # Function to install and load packages
 load_packages <- function(packages) {
@@ -83,87 +83,667 @@ datasets <- list(
 
 cat("✓ Main dataset loaded:", nrow(survey_data), "rows,", ncol(survey_data), "columns\n")
 cat("✓ Processed datasets loaded:", length(datasets), "analysis matrices\n")
+
+# Validate that processed datasets were loaded successfully
+for(dataset_name in names(datasets)) {
+  if(nrow(datasets[[dataset_name]]) > 0) {
+    cat("  -", dataset_name, ":", nrow(datasets[[dataset_name]]), "rows ×", ncol(datasets[[dataset_name]]), "columns\n")
+  } else {
+    cat("  - ⚠️", dataset_name, ": EMPTY or FAILED to load\n")
+  }
+}
+```
+```
+```{r}
+glimpse(survey_data)
 ```
 
-## 2.3 Data Preparation for Multivariate Analysis
+### Identified columns in datasets for modelling
+```{r column_identification}
+# Examine the structure of the main survey dataset
+cat("=== MAIN SURVEY DATASET STRUCTURE ===\n")
+cat("Dimensions:", nrow(survey_data), "rows ×", ncol(survey_data), "columns\n\n")
+
+# Display column names and types
+main_columns <- data.frame(
+  Column = names(survey_data),
+  Type = sapply(survey_data, class),
+  Sample_Values = sapply(survey_data, function(x) {
+    if(is.numeric(x)) {
+      paste(round(range(x, na.rm = TRUE), 2), collapse = " - ")
+    } else {
+      paste(unique(x)[1:min(3, length(unique(x)))], collapse = ", ")
+    }
+  }),
+  Missing_Count = sapply(survey_data, function(x) sum(is.na(x))),
+  stringsAsFactors = FALSE
+)
+
+kable(main_columns, 
+      caption = "Main Survey Dataset - Column Overview",
+      col.names = c("Column Name", "Data Type", "Sample Values/Range", "Missing Values"))
+
+# Examine the structure of each processed dataset
+cat("\n=== PROCESSED DATASETS OVERVIEW ===\n")
+for(dataset_name in names(datasets)) {
+  dataset <- datasets[[dataset_name]]
+  cat("\n**", toupper(gsub("_", " ", dataset_name)), "DATASET:**\n")
+  cat("- Dimensions:", nrow(dataset), "rows ×", ncol(dataset), "columns\n")
+  cat("- Columns:", paste(names(dataset), collapse = ", "), "\n")
+  
+  # Check for numeric vs categorical columns
+  numeric_cols <- names(dataset)[sapply(dataset, is.numeric)]
+  categorical_cols <- names(dataset)[!sapply(dataset, is.numeric)]
+  
+  if(length(numeric_cols) > 0) {
+    cat("- Numeric columns:", paste(numeric_cols, collapse = ", "), "\n")
+  }
+  if(length(categorical_cols) > 0) {
+    cat("- Categorical columns:", paste(categorical_cols, collapse = ", "), "\n")
+  }
+}
+
+# Identify potential modeling variables
+cat("\n=== MODELING VARIABLE IDENTIFICATION ===\n")
+
+# Separate variables by type for modeling
+numeric_vars <- names(survey_data)[sapply(survey_data, is.numeric)]
+character_vars <- names(survey_data)[sapply(survey_data, is.character)]
+factor_vars <- names(survey_data)[sapply(survey_data, is.factor)]
+
+cat("**NUMERIC VARIABLES (", length(numeric_vars), "):**\n")
+cat(paste(numeric_vars, collapse = ", "), "\n\n")
+
+cat("**CHARACTER VARIABLES (", length(character_vars), "):**\n") 
+cat(paste(character_vars, collapse = ", "), "\n\n")
+
+if(length(factor_vars) > 0) {
+  cat("**FACTOR VARIABLES (", length(factor_vars), "):**\n")
+  cat(paste(factor_vars, collapse = ", "), "\n\n")
+}
+
+# Identify key variables for different analyses
+cat("**RECOMMENDED VARIABLES FOR DIFFERENT ANALYSES:**\n\n")
+
+# For Factor Analysis (numeric only)
+fa_candidates <- numeric_vars[!is.na(numeric_vars)]
+cat("- **Factor Analysis candidates:** ", paste(fa_candidates, collapse = ", "), "\n")
+
+# For FAMD (mixed data)
+famd_candidates <- c(
+  numeric_vars[1:min(3, length(numeric_vars))], # First few numeric
+  character_vars[1:min(3, length(character_vars))] # First few categorical
+)
+cat("- **FAMD candidates:** ", paste(famd_candidates, collapse = ", "), "\n")
+
+# For Correspondence Analysis (categorical)
+ca_candidates <- character_vars[1:min(4, length(character_vars))]
+cat("- **Correspondence Analysis candidates:** ", paste(ca_candidates, collapse = ", "), "\n")
+
+# Check for key business variables
+business_vars <- character_vars[grepl("activity|product|type|category", character_vars, ignore.case = TRUE)]
+location_vars <- character_vars[grepl("location|address|zone|area", character_vars, ignore.case = TRUE)]
+logistics_vars <- character_vars[grepl("transport|delivery|supply|warehouse|logistics", character_vars, ignore.case = TRUE)]
+
+if(length(business_vars) > 0) {
+  cat("- **Business characteristic variables:** ", paste(business_vars, collapse = ", "), "\n")
+}
+if(length(location_vars) > 0) {
+  cat("- **Location variables:** ", paste(location_vars, collapse = ", "), "\n")
+}
+if(length(logistics_vars) > 0) {
+  cat("- **Logistics variables:** ", paste(logistics_vars, collapse = ", "), "\n")
+}
+
+# Data quality summary
+cat("\n**DATA QUALITY SUMMARY:**\n")
+missing_summary <- survey_data %>%
+  summarise_all(~sum(is.na(.))) %>%
+  gather(key = "Variable", value = "Missing_Count") %>%
+  arrange(desc(Missing_Count)) %>%
+  slice_head(n = 5)
+
+cat("Variables with most missing values:\n")
+for(i in 1:nrow(missing_summary)) {
+  cat("-", missing_summary$Variable[i], ":", missing_summary$Missing_Count[i], "missing\n")
+}
+```
+
+### Raw Main Products Analysis
+```{r raw_products_analysis}
+# Detailed analysis of the main_products column to inform better categorization
+if("main_products" %in% names(survey_data)) {
+  
+  # Clean and analyze raw main_products data
+  raw_products_summary <- survey_data %>%
+    filter(!is.na(main_products), trimws(main_products) != "") %>%
+    mutate(main_products_clean_text = trimws(main_products)) %>%
+    count(main_products_clean_text, sort = TRUE) %>%
+    mutate(
+      main_products_lower = str_to_lower(main_products_clean_text),
+      percentage = round(n / sum(n) * 100, 1),
+      cumulative_pct = round(cumsum(n) / sum(n) * 100, 1),
+      # Current categorization rules
+      current_category = case_when(
+        str_detect(main_products_lower, "ropa|textil|confecci[oó]n") ~ "Clothing & Textiles",
+        str_detect(main_products_lower, "calzado") ~ "Footwear", 
+        str_detect(main_products_lower, "cosm[eé]tic|belleza") ~ "Cosmetics & Beauty",
+        str_detect(main_products_lower, "alimento|comida") ~ "Food & Beverages",
+        str_detect(main_products_lower, "electr[oó]nic|tecnolog") ~ "Electronics & Technology", 
+        str_detect(main_products_lower, "reciclaje|residuos") ~ "Waste & Recycling",
+        str_detect(main_products_lower, "manufactur") ~ "Manufacturing",
+        str_detect(main_products_lower, "papel|oficina") ~ "Office Supplies",
+        TRUE ~ "Other Products"
+      ),
+      # Identify potential new categories from most common "Other Products"
+      potential_new_category = case_when(
+        str_detect(main_products_lower, "joyeria|joyas|bijouterie") ~ "Jewelry & Accessories",
+        str_detect(main_products_lower, "farmacia|medicamento|drogueria") ~ "Pharmacy & Medical",
+        str_detect(main_products_lower, "optica|lentes|gafas") ~ "Optical & Eyewear",
+        str_detect(main_products_lower, "ferreteria|herramienta|materiales") ~ "Hardware & Tools",
+        str_detect(main_products_lower, "libreria|libro|papeleria") ~ "Books & Stationery",
+        str_detect(main_products_lower, "decoracion|muebles|hogar") ~ "Home & Decoration",
+        str_detect(main_products_lower, "telefon|celular|comunicacion") ~ "Telecommunications",
+        str_detect(main_products_lower, "deportes|fitness|gym") ~ "Sports & Fitness",
+        str_detect(main_products_lower, "vehiculo|moto|automotriz") ~ "Automotive",
+        str_detect(main_products_lower, "mascotas|veterinaria|animales") ~ "Pet Care",
+        str_detect(main_products_lower, "servicios|reparacion") ~ "Services",
+        TRUE ~ current_category
+      )
+    )
+  
+  # Summary statistics
+  cat("=== RAW MAIN_PRODUCTS DETAILED ANALYSIS ===\n")
+  cat("Total unique products:", nrow(raw_products_summary), "\n")
+  cat("Total observations:", sum(raw_products_summary$n), "\n")
+  
+  # Current categorization results
+  current_cat_summary <- raw_products_summary %>%
+    group_by(current_category) %>%
+    summarise(
+      unique_products = n(),
+      total_observations = sum(n),
+      percentage = round(sum(n) / sum(raw_products_summary$n) * 100, 1)
+    ) %>%
+    arrange(desc(total_observations))
+  
+  cat("\nCURRENT CATEGORIZATION RESULTS:\n")
+  kable(current_cat_summary, 
+        caption = "Current Product Categorization Distribution",
+        col.names = c("Category", "Unique Products", "Observations", "Percentage (%)"))
+  
+  # Show products currently falling into "Other Products"
+  other_products <- raw_products_summary %>%
+    filter(current_category == "Other Products") %>%
+    arrange(desc(n)) %>%
+    slice_head(n = 25)
+  
+  cat("\nTOP 25 PRODUCTS CURRENTLY CATEGORIZED AS 'OTHER PRODUCTS':\n")
+  if(nrow(other_products) > 0) {
+    for(i in 1:nrow(other_products)) {
+      cat(sprintf("%2d. %-50s (%2d obs, %2.1f%%) -> %s\n", 
+                 i, 
+                 other_products$main_products_clean_text[i], 
+                 other_products$n[i],
+                 other_products$percentage[i],
+                 other_products$potential_new_category[i]))
+    }
+  } else {
+    cat("No products falling into 'Other Products' category.\n")
+  }
+  
+  # Potential new categorization results
+  new_cat_summary <- raw_products_summary %>%
+    group_by(potential_new_category) %>%
+    summarise(
+      unique_products = n(),
+      total_observations = sum(n),
+      percentage = round(sum(n) / sum(raw_products_summary$n) * 100, 1)
+    ) %>%
+    arrange(desc(total_observations))
+  
+  cat("\nPOTENTIAL IMPROVED CATEGORIZATION RESULTS:\n")
+  kable(new_cat_summary, 
+        caption = "Potential Improved Product Categorization Distribution",
+        col.names = c("Category", "Unique Products", "Observations", "Percentage (%)"))
+  
+  # Show the most frequent raw products overall
+  cat("\nTOP 20 MOST FREQUENT RAW PRODUCTS:\n")
+  top_products <- head(raw_products_summary, 20)
+  for(i in 1:nrow(top_products)) {
+    cat(sprintf("%2d. %-50s (%2d obs, %2.1f%%, cum: %2.1f%%)\n", 
+               i, 
+               top_products$main_products_clean_text[i], 
+               top_products$n[i],
+               top_products$percentage[i],
+               top_products$cumulative_pct[i]))
+  }
+  
+  # Calculate improvement in categorization
+  current_other_pct <- current_cat_summary$percentage[current_cat_summary$current_category == "Other Products"]
+  new_other_pct <- new_cat_summary$percentage[new_cat_summary$potential_new_category == "Other Products"]
+  
+  if(length(current_other_pct) > 0 && length(new_other_pct) > 0) {
+    cat(sprintf("\nCATEGORIZATION IMPROVEMENT:\n"))
+    cat(sprintf("- Current 'Other Products': %2.1f%%\n", current_other_pct))
+    cat(sprintf("- Improved 'Other Products': %2.1f%%\n", new_other_pct)) 
+    cat(sprintf("- Reduction in 'Other': %2.1f percentage points\n", current_other_pct - new_other_pct))
+  }
+  
+  # Store analysis for use in enhanced categorization
+  assign("products_analysis_result", raw_products_summary, envir = .GlobalEnv)
+  
+} else {
+  cat("main_products column not found in survey_data\n")
+}
+```
+
+### Processed Datasets Integration and Analysis
+```{r processed_datasets_analysis}
+# Instead of re-cleaning data, let's use the pre-processed analysis matrices from Python
+cat("=== UTILIZING PRE-PROCESSED DATASETS FROM PYTHON PIPELINE ===\n")
+
+# Function to safely examine dataset structure
+examine_dataset <- function(dataset, name) {
+  if(!is.null(dataset) && nrow(dataset) > 0) {
+    cat("\n**", toupper(name), "DATASET ANALYSIS:**\n")
+    cat("- Dimensions:", nrow(dataset), "rows ×", ncol(dataset), "columns\n")
+    cat("- Column names:", paste(names(dataset), collapse = ", "), "\n")
+    
+    # Check if this looks like a cross-tabulation or frequency matrix
+    if(ncol(dataset) > 2 && all(sapply(dataset[,-1], is.numeric))) {
+      cat("- Type: Cross-tabulation/frequency matrix\n")
+      
+      # Show first few rows if it's a reasonable size
+      if(nrow(dataset) <= 20 && ncol(dataset) <= 10) {
+        cat("- Preview:\n")
+        print(kable(head(dataset, 5), caption = paste("Preview of", name, "dataset")))
+      }
+      
+      # Calculate totals and summary statistics
+      if(ncol(dataset) >= 3) {
+        numeric_cols <- dataset[sapply(dataset, is.numeric)]
+        if(ncol(numeric_cols) > 0) {
+          cat("- Total observations:", sum(numeric_cols, na.rm = TRUE), "\n")
+          cat("- Non-zero cells:", sum(numeric_cols > 0, na.rm = TRUE), "out of", length(numeric_cols), "\n")
+        }
+      }
+      
+      return(TRUE)  # Successfully processed
+    } else {
+      cat("- Type: Standard dataset\n")
+      cat("- Sample data types:", paste(sapply(dataset, class), collapse = ", "), "\n")
+      return(TRUE)
+    }
+  } else {
+    cat("\n**", toupper(name), ":** ❌ Empty or invalid dataset\n")
+    return(FALSE)
+  }
+}
+
+# Examine all datasets and store valid ones
+valid_datasets <- list()
+for(dataset_name in names(datasets)) {
+  is_valid <- examine_dataset(datasets[[dataset_name]], dataset_name)
+  if(is_valid) {
+    valid_datasets[[dataset_name]] <- datasets[[dataset_name]]
+  }
+}
+
+cat("\n=== DATASET UTILIZATION STRATEGY ===\n")
+cat("Valid datasets for analysis:", length(valid_datasets), "out of", length(datasets), "\n")
+
+if(length(valid_datasets) > 0) {
+  
+  # Strategy 1: Use datasets for correspondence analysis and categorical relationships
+  cat("\n**CORRESPONDENCE ANALYSIS OPPORTUNITIES:**\n")
+  
+  # Identify datasets suitable for CA
+  ca_suitable <- c("temporal", "transport_mode", "unloading_location", "unloading_equipment", 
+                   "supply_frequency", "warehouse_ownership", "warehouse_zuap")
+  
+  available_ca_datasets <- intersect(names(valid_datasets), ca_suitable)
+  cat("- CA suitable datasets:", paste(available_ca_datasets, collapse = ", "), "\n")
+  
+  # Strategy 2: Use perception datasets for specialized analysis
+  perception_datasets <- c("supply_perception", "bike_perception")
+  available_perception <- intersect(names(valid_datasets), perception_datasets)
+  cat("- Perception analysis datasets:", paste(available_perception, collapse = ", "), "\n")
+  
+  # Strategy 3: Use delivery datasets for logistics profiling
+  delivery_datasets <- c("ecommerce_deliveries", "traditional_deliveries")
+  available_delivery <- intersect(names(valid_datasets), delivery_datasets)
+  cat("- Delivery pattern datasets:", paste(available_delivery, collapse = ", "), "\n")
+  
+  # Strategy 4: Create integrated analysis using processed data
+  cat("\n**INTEGRATION APPROACH:**\n")
+  cat("Instead of re-cleaning survey_data, we can:\n")
+  cat("1. Use processed datasets for detailed categorical analysis\n")
+  cat("2. Perform CA on pre-computed cross-tabulations\n")
+  cat("3. Integrate results with main survey for comprehensive profiling\n")
+  cat("4. Leverage Python pipeline work for enhanced insights\n")
+  
+  # Store information for later use
+  assign("valid_processed_datasets", valid_datasets, envir = .GlobalEnv)
+  assign("ca_datasets", available_ca_datasets, envir = .GlobalEnv)
+  assign("perception_datasets", available_perception, envir = .GlobalEnv)
+  assign("delivery_datasets", available_delivery, envir = .GlobalEnv)
+  
+} else {
+  cat("⚠️ No valid processed datasets found. Will proceed with survey_data cleaning.\n")
+}
+```
+```
+
+## 2.3 Data Preparation Strategy: Integrated Approach
+
+```{r data_preparation_strategy}
+# DECISION: Use processed datasets where available, supplement with survey_data cleaning
+cat("=== INTEGRATED DATA PREPARATION STRATEGY ===\n")
+
+# Check if we have valid processed datasets to work with
+if(exists("valid_processed_datasets") && length(valid_processed_datasets) > 0) {
+  
+  cat("✓ Using hybrid approach: Processed datasets + Enhanced survey_data cleaning\n")
+  cat("This avoids duplicating Python pipeline work while enhancing analysis\n\n")
+  
+  # For FAMD and main analysis: Enhanced cleaning of survey_data (as currently done)
+  # For specialized analysis: Use processed datasets from Python pipeline
+  
+  use_processed_data <- TRUE
+  
+} else {
+  
+  cat("⚠️ No processed datasets available, using survey_data cleaning only\n")
+  use_processed_data <- FALSE
+  
+}
+
+# Store decision for later use
+assign("use_processed_data", use_processed_data, envir = .GlobalEnv)
+```
+
+## 2.4 Enhanced Survey Data Preparation for FAMD
 
 ```{r data_preparation}
-# Prepare main dataset for FAMD analysis
-famd_data <- survey_data %>%
-  # Create establishment type variable
+# Load additional packages for improved data preparation
+library(janitor)
+
+# INTEGRATION NOTE: This section enhances survey_data for FAMD analysis
+# The processed datasets from Python are used separately for specialized CA analysis
+cat("=== SURVEY DATA ENHANCEMENT FOR FAMD ===\n")
+cat("Note: Using processed datasets for specialized analysis, enhancing survey_data for multivariate analysis\n\n")
+#AAas
+# Define helper vectors for data types
+structural_zero_vars <- c("num_deliveries", "num_online_deliveries", 
+                         "female_employees", "female_emplo_distri", 
+                         "number_warehouse")
+
+numeric_vars <- c("employees", structural_zero_vars, "warehouse_area", 
+                 "warehouse_height")
+
+# Enhanced data preparation pipeline
+famd_data <- survey_data %>% 
+  janitor::clean_names() %>%                                   # Convert to snake_case
+  mutate(across(everything(), ~na_if(trimws(.x), ""))) %>%     # Convert empty strings to NA
+  
+  # Convert structural zero variables to numeric first, then handle NAs
+  mutate(across(all_of(structural_zero_vars), ~as.numeric(.x))) %>%
+  
+  # Keep structural zeros explicit (important for logistics data)
+  mutate(across(all_of(structural_zero_vars), ~replace_na(.x, 0))) %>% 
+  
+  # Enhanced categorical recoding with factors
   mutate(
+    # Establishment type with proper factor levels
     est_type = case_when(
-      str_detect(tolower(economic_activity), "proveedor") ~ "Supplier",
-      str_detect(tolower(economic_activity), "venta al detalle") ~ "Retailer", 
-      str_detect(tolower(economic_activity), "fabricante") ~ "Manufacturer",
-      str_detect(tolower(economic_activity), "ventas por internet") ~ "E-commerce",
-      TRUE ~ "Other"
-    ),
+      str_detect(str_to_lower(economic_activity), "proveedor")        ~ "Supplier",
+      str_detect(str_to_lower(economic_activity), "venta al detalle") ~ "Retailer",
+      str_detect(str_to_lower(economic_activity), "fabricante")       ~ "Manufacturer",
+      str_detect(str_to_lower(economic_activity), "internet")         ~ "E-commerce",
+      TRUE                                                            ~ "Other"
+    ) %>% factor(levels = c("Retailer", "Supplier", "Manufacturer", "E-commerce", "Other")),
     
-    # Normalize numeric variables
-    employees_norm = scale(as.numeric(employees))[,1],
-    supply_week_norm = scale(as.numeric(supply_week))[,1],
-    
-    # Create binary indicators
+    # Warehouse indicators with proper handling
     has_warehouse = case_when(
-      str_detect(tolower(warehouse), "no") ~ "No",
-      TRUE ~ "Yes"
-    ),
+      str_detect(str_to_lower(warehouse), "no") ~ "No",
+      str_detect(str_to_lower(warehouse), "interno") ~ "Internal",
+      str_detect(str_to_lower(warehouse), "externo") ~ "External", 
+      TRUE ~ "Mixed"
+    ) %>% factor(levels = c("No", "Internal", "External", "Mixed")),
     
     warehouse_in_zuap = case_when(
-      str_detect(tolower(zuap_warehouse), "sí|si|yes") ~ "Yes",
-      TRUE ~ "No"
-    ),
-    
-    # Safety perception levels
-    safety_level = case_when(
-      supply_safety_percep >= 4 ~ "High",
-      supply_safety_percep == 3 ~ "Medium",
-      supply_safety_percep <= 2 ~ "Low",
+      str_detect(str_to_lower(zuap_warehouse), "sí|si|yes") ~ "Yes",
+      str_detect(str_to_lower(zuap_warehouse), "no") ~ "No",
       TRUE ~ "Unknown"
-    ),
+    ) %>% factor(levels = c("No", "Yes", "Unknown")),
     
-    bike_safety_level = case_when(
-      supply_bic_safety_perception >= 4 ~ "High",
-      supply_bic_safety_perception == 3 ~ "Medium", 
-      supply_bic_safety_perception <= 2 ~ "Low",
-      TRUE ~ "Unknown"
-    ),
+    # Ordinal safety perception variables with proper cuts
+    safety_level = cut(as.numeric(supply_safety_percep),
+                       breaks = c(-Inf, 2, 3, Inf),
+                       labels = c("Low", "Medium", "High"),
+                       ordered_result = TRUE),
     
-    # Clean and categorize specific activity
+    bike_safety_level = cut(as.numeric(supply_bic_safety_perception),
+                            breaks = c(-Inf, 2, 3, Inf),
+                            labels = c("Low", "Medium", "High"),
+                            ordered_result = TRUE),
+    
+    # Enhanced activity classification
     specific_activity_clean = case_when(
-      str_detect(tolower(specific_activity), "venta de") ~ str_to_title(str_trim(specific_activity)),
-      str_detect(tolower(specific_activity), "fabricación") ~ "Manufacturing",
-      str_detect(tolower(specific_activity), "recolección") ~ "Waste Collection",
-      str_detect(tolower(specific_activity), "servicios") ~ "Services",
-      !is.na(specific_activity) & specific_activity != "" ~ str_to_title(str_trim(specific_activity)),
+      str_detect(str_to_lower(specific_activity), "fabricaci[oó]n") ~ "Manufacturing",
+      str_detect(str_to_lower(specific_activity), "recolecci[oó]n") ~ "Waste Collection",
+      str_detect(str_to_lower(specific_activity), "servicio")       ~ "Services",
+      str_detect(str_to_lower(specific_activity), "venta de")       ~ "Retail Sales",
+      str_detect(str_to_lower(specific_activity), "distribuci[oó]n") ~ "Distribution",
+      !is.na(specific_activity) & specific_activity != ""           ~ "Other Commercial",
+      TRUE                                                          ~ "Other"
+    ) %>% factor(),
+    
+    # First, let's analyze the raw main_products column to understand what we're categorizing
+    temp_products_analysis = if(exists("main_products") && length(unique(main_products[!is.na(main_products)])) > 0) {
+      # Create a temporary analysis of raw products
+      raw_products_summary <- survey_data %>%
+        filter(!is.na(main_products), main_products != "") %>%
+        count(main_products, sort = TRUE) %>%
+        mutate(
+          main_products_lower = str_to_lower(main_products),
+          percentage = round(n / sum(n) * 100, 1),
+          # Identify what would fall into "Other Products" with current rules
+          current_category = case_when(
+            str_detect(main_products_lower, "ropa|textil|confecci[oó]n") ~ "Clothing & Textiles",
+            str_detect(main_products_lower, "calzado")                   ~ "Footwear", 
+            str_detect(main_products_lower, "cosm[eé]tic|belleza")       ~ "Cosmetics & Beauty",
+            str_detect(main_products_lower, "alimento|comida")           ~ "Food & Beverages",
+            str_detect(main_products_lower, "electr[oó]nic|tecnolog")    ~ "Electronics & Technology",
+            str_detect(main_products_lower, "reciclaje|residuos")        ~ "Waste & Recycling",
+            str_detect(main_products_lower, "manufactur")                ~ "Manufacturing",
+            str_detect(main_products_lower, "papel|oficina")             ~ "Office Supplies",
+            TRUE                                                        ~ "Other Products"
+          )
+        )
+      
+      # Print analysis results
+      cat("=== RAW MAIN_PRODUCTS ANALYSIS ===\n")
+      cat("Total unique products:", nrow(raw_products_summary), "\n")
+      cat("Products falling into 'Other Products':", sum(raw_products_summary$current_category == "Other Products"), "\n")
+      cat("Percentage of data in 'Other Products':", round(sum(raw_products_summary$n[raw_products_summary$current_category == "Other Products"]) / sum(raw_products_summary$n) * 100, 1), "%\n\n")
+      
+      # Show top 20 raw products and their current categorization
+      cat("TOP 20 RAW PRODUCTS AND CURRENT CATEGORIZATION:\n")
+      top_products <- head(raw_products_summary, 20)
+      for(i in 1:nrow(top_products)) {
+        cat(sprintf("%2d. %-40s (%2d%%) -> %s\n", 
+                   i, 
+                   top_products$main_products[i], 
+                   top_products$percentage[i],
+                   top_products$current_category[i]))
+      }
+      
+      # Show specifically what's falling into "Other Products"
+      cat("\nPRODUCTS CURRENTLY CATEGORIZED AS 'OTHER PRODUCTS':\n")
+      other_products <- raw_products_summary %>%
+        filter(current_category == "Other Products") %>%
+        arrange(desc(n))
+      
+      if(nrow(other_products) > 0) {
+        for(i in 1:min(nrow(other_products), 15)) {
+          cat(sprintf("%2d. %-40s (%2d observations, %2.1f%%)\n", 
+                     i, 
+                     other_products$main_products[i], 
+                     other_products$n[i],
+                     other_products$percentage[i]))
+        }
+      } else {
+        cat("No products falling into 'Other Products' category.\n")
+      }
+      
+      # Return the analysis for potential use
+      raw_products_summary
+    } else {
+      cat("main_products column not found or empty\n")
+      NULL
+    },
+
+    # Enhanced product categorization based on raw data analysis
+    main_products_clean = case_when(
+      # Original core categories
+      str_detect(str_to_lower(main_products), "ropa|textil|confecci[oó]n") ~ "Clothing & Textiles",
+      str_detect(str_to_lower(main_products), "calzado") ~ "Footwear",
+      str_detect(str_to_lower(main_products), "cosm[eé]tic|belleza") ~ "Cosmetics & Beauty",
+      str_detect(str_to_lower(main_products), "alimento|comida") ~ "Food & Beverages",
+      str_detect(str_to_lower(main_products), "electr[oó]nic|tecnolog") ~ "Electronics & Technology",
+      str_detect(str_to_lower(main_products), "reciclaje|residuos") ~ "Waste & Recycling",
+      str_detect(str_to_lower(main_products), "manufactur") ~ "Manufacturing",
+      str_detect(str_to_lower(main_products), "papel|oficina") ~ "Office Supplies",
+      
+      # New categories identified from analysis to reduce "Other Products"
+      str_detect(str_to_lower(main_products), "joyeria|joyas|bijouterie|accesorio") ~ "Jewelry & Accessories",
+      str_detect(str_to_lower(main_products), "farmacia|medicamento|drogueria|salud") ~ "Pharmacy & Medical",
+      str_detect(str_to_lower(main_products), "optica|lentes|gafas|visual") ~ "Optical & Eyewear",
+      str_detect(str_to_lower(main_products), "ferreteria|herramienta|materiales|construcción") ~ "Hardware & Tools",
+      str_detect(str_to_lower(main_products), "libreria|libro|papeleria|educacion") ~ "Books & Stationery",
+      str_detect(str_to_lower(main_products), "decoracion|muebles|hogar|casa") ~ "Home & Decoration",
+      str_detect(str_to_lower(main_products), "telefon|celular|comunicacion|movil") ~ "Telecommunications",
+      str_detect(str_to_lower(main_products), "deportes|fitness|gym|deportivo") ~ "Sports & Fitness",
+      str_detect(str_to_lower(main_products), "vehiculo|moto|automotriz|auto|carro") ~ "Automotive",
+      str_detect(str_to_lower(main_products), "mascotas|veterinaria|animales|pet") ~ "Pet Care",
+      str_detect(str_to_lower(main_products), "servicios|reparacion|mantenimiento") ~ "Services",
+      
+      # Keep for valid non-empty products not captured above
+      !is.na(main_products) & main_products != "" ~ "Other Products",
       TRUE ~ "Other"
+    ) %>% factor(),
+    
+    # Warehouse floor as ordinal (floor levels matter for logistics)
+    warehouse_floor_ord = case_when(
+      is.na(warehouse_floor) ~ NA_character_,
+      warehouse_floor <= 1 ~ "Ground Floor",
+      warehouse_floor <= 3 ~ "Low Floor (2-3)",
+      warehouse_floor <= 5 ~ "Mid Floor (4-5)",
+      TRUE ~ "High Floor (6+)"
+    ) %>% factor(levels = c("Ground Floor", "Low Floor (2-3)", "Mid Floor (4-5)", "High Floor (6+)"), 
+                 ordered = TRUE)
+  ) %>% 
+  
+  # Ordinal conversion and normalization
+  mutate(
+    # Parse supply frequency properly
+    supply_week_num = case_when(
+      str_detect(str_to_lower(supply_week), "1") ~ 1L,
+      str_detect(str_to_lower(supply_week), "2") ~ 2L,
+      str_detect(str_to_lower(supply_week), "3") ~ 3L,
+      str_detect(str_to_lower(supply_week), "4") ~ 4L,
+      str_detect(str_to_lower(supply_week), "5") ~ 5L,
+      str_detect(str_to_lower(supply_week), "6|más") ~ 6L,
+      TRUE ~ 3L  # median value for missing
     ),
     
-    # Clean and categorize main products
-    main_products_clean = case_when(
-      str_detect(tolower(main_products), "ropa|textil|confección") ~ "Clothing & Textiles",
-      str_detect(tolower(main_products), "calzado") ~ "Footwear",
-      str_detect(tolower(main_products), "cosmeticos|belleza") ~ "Cosmetics & Beauty",
-      str_detect(tolower(main_products), "alimentos|comida") ~ "Food & Beverages",
-      str_detect(tolower(main_products), "manufactura|fabricación") ~ "Manufacturing",
-      str_detect(tolower(main_products), "reciclaje|residuos") ~ "Waste & Recycling",
-      str_detect(tolower(main_products), "electrónicos|tecnología") ~ "Electronics & Technology",
-      !is.na(main_products) & main_products != "" ~ str_to_title(str_trim(main_products)),
-      TRUE ~ "Other"
-    )
-  ) %>%
-  # Select key variables for analysis
-  select(est_type, specific_activity_clean, main_products_clean, 
-         employees_norm, supply_week_norm, has_warehouse, 
-         warehouse_in_zuap, safety_level, bike_safety_level,
-         supply_safety_percep, supply_bic_safety_perception) %>%
-  # Remove incomplete cases
-  filter(complete.cases(.))
+    # Create size categories for employees
+    establishment_size = case_when(
+      employees <= 3 ~ "Micro (1-3)",
+      employees <= 10 ~ "Small (4-10)", 
+      employees <= 25 ~ "Medium (11-25)",
+      TRUE ~ "Large (26+)"
+    ) %>% factor(levels = c("Micro (1-3)", "Small (4-10)", "Medium (11-25)", "Large (26+)"), 
+                 ordered = TRUE),
+    
+    # Normalize numeric variables (with proper handling of zeros)
+    supply_week_norm = scale(supply_week_num)[, 1],
+    across(all_of(numeric_vars), ~scale(as.numeric(.x))[, 1], .names = "{.col}_norm"),
+    
+    # Create logistics intensity indicators
+    delivery_intensity = case_when(
+      num_deliveries == 0 ~ "No Deliveries",
+      num_deliveries <= 2 ~ "Low (1-2/day)",
+      num_deliveries <= 5 ~ "Medium (3-5/day)",
+      TRUE ~ "High (6+/day)"
+    ) %>% factor(levels = c("No Deliveries", "Low (1-2/day)", "Medium (3-5/day)", "High (6+/day)"), 
+                 ordered = TRUE),
+    
+    online_delivery_intensity = case_when(
+      num_online_deliveries == 0 ~ "No Online",
+      num_online_deliveries <= 2 ~ "Low Online",
+      num_online_deliveries <= 5 ~ "Medium Online", 
+      TRUE ~ "High Online"
+    ) %>% factor(levels = c("No Online", "Low Online", "Medium Online", "High Online"), 
+                 ordered = TRUE)
+  ) %>% 
+  
+  # Select key variables for FAMD analysis
+  select(
+    # Categorical variables
+    est_type, specific_activity_clean, main_products_clean,
+    has_warehouse, warehouse_in_zuap, establishment_size,
+    safety_level, bike_safety_level, warehouse_floor_ord,
+    delivery_intensity, online_delivery_intensity,
+    
+    # Normalized numeric variables  
+    employees_norm, num_deliveries_norm, num_online_deliveries_norm,
+    female_employees_norm, female_emplo_distri_norm, number_warehouse_norm,
+    warehouse_area_norm, warehouse_height_norm, supply_week_norm,
+    
+    # Original perception variables for reference
+    supply_safety_percep, supply_bic_safety_perception
+  ) %>% 
+  
+  # Remove incomplete cases only after all transformations
+  filter(if_all(c(est_type, specific_activity_clean, main_products_clean, 
+                  employees_norm, supply_week_norm, safety_level, bike_safety_level), 
+                ~!is.na(.x)))
 
+# Diagnostics and summary
 cat("✓ FAMD dataset prepared:", nrow(famd_data), "complete observations\n")
-cat("Variables for analysis:", paste(names(famd_data), collapse = ", "), "\n")
+cat("✓ Variables for analysis:\n")
+
+# Categorize variables by type for analysis
+categorical_vars <- famd_data %>% 
+  select_if(is.factor) %>% 
+  names()
+
+numeric_analysis_vars <- famd_data %>% 
+  select(ends_with("_norm")) %>% 
+  names()
+
+cat("  - Categorical variables (", length(categorical_vars), "):", 
+    paste(categorical_vars, collapse = ", "), "\n")
+cat("  - Normalized numeric variables (", length(numeric_analysis_vars), "):", 
+    paste(numeric_analysis_vars, collapse = ", "), "\n")
+
+# Data quality check
+cat("\n✓ Data quality summary:\n")
+cat("  - No missing values in core variables:", 
+    sum(is.na(famd_data[categorical_vars])) == 0, "\n")
+cat("  - Establishment types:", paste(levels(famd_data$est_type), collapse = ", "), "\n")
+cat("  - Warehouse configurations:", paste(levels(famd_data$has_warehouse), collapse = ", "), "\n")
 ```
+
+```{r}
+# Enhanced product categorization
+    main_products_clean = case_when(
+      str_detect(str_to_lower(main_products)
+```
+
 
 # 3. Exploratory Data Analysis & Diagnostics
 
@@ -193,7 +773,8 @@ str(famd_data)
 #  Select numeric variables for normality testing
 numeric_vars <- famd_data %>% 
   select_if(is.numeric) %>%
-  select(-supply_safety_percep, -supply_bic_safety_perception)
+  # Remove perception variables if they exist
+  select(-any_of(c("supply_safety_percep", "supply_bic_safety_perception")))
 
 # Debug: Check what we actually have
 cat("Columns in numeric_vars:", paste(names(numeric_vars), collapse = ", "), "\n")
@@ -882,6 +1463,154 @@ if(exists("famd_input")) {
   cat("- Establishment-Safety analysis:", nrow(ca_data), "observations\n")
   cat("- Products-Establishment analysis:", nrow(products_data), "observations\n") 
   cat("- Activity-Safety analysis:", nrow(activity_safety_data), "observations\n")
+}
+```
+
+# 5.3 Advanced Analysis Using Processed Datasets
+
+```{r processed_datasets_ca}
+# Leverage the pre-processed datasets from Python pipeline for detailed analysis
+if(exists("valid_processed_datasets") && length(valid_processed_datasets) > 0) {
+  
+  cat("=== ADVANCED ANALYSIS USING PROCESSED DATASETS ===\n")
+  
+  # Function to perform CA on processed datasets
+  analyze_processed_dataset <- function(dataset, dataset_name) {
+    tryCatch({
+      if(!is.null(dataset) && nrow(dataset) > 0) {
+        
+        cat("\n**", toupper(dataset_name), "ANALYSIS:**\n")
+        
+        # Check if this is a cross-tabulation matrix suitable for CA
+        if(ncol(dataset) >= 3 && is.character(dataset[[1]]) && all(sapply(dataset[,-1], is.numeric))) {
+          
+          # Convert to matrix for CA
+          row_names <- dataset[[1]]
+          ca_matrix <- as.matrix(dataset[,-1])
+          rownames(ca_matrix) <- row_names
+          
+          # Remove rows/columns with all zeros
+          ca_matrix <- ca_matrix[rowSums(ca_matrix) > 0, ]
+          ca_matrix <- ca_matrix[, colSums(ca_matrix) > 0]
+          
+          if(nrow(ca_matrix) >= 2 && ncol(ca_matrix) >= 2) {
+            
+            cat("- Matrix dimensions:", nrow(ca_matrix), "×", ncol(ca_matrix), "\n")
+            cat("- Total observations:", sum(ca_matrix), "\n")
+            
+            # Display the matrix
+            kable(ca_matrix, 
+                  caption = paste("Cross-tabulation Matrix:", dataset_name),
+                  digits = 0)
+            
+            # Perform Correspondence Analysis
+            library(FactoMineR)
+            library(factoextra)
+            
+            # Add small constant if there are zeros (for CA stability)
+            if(min(ca_matrix) == 0) {
+              ca_matrix_adj <- ca_matrix + 0.1
+              cat("- Added small constant to handle zero cells\n")
+            } else {
+              ca_matrix_adj <- ca_matrix
+            }
+            
+            ca_result_processed <- CA(ca_matrix_adj, graph = FALSE)
+            
+            # Eigenvalues
+            eig_vals <- get_eigenvalue(ca_result_processed)
+            cat("- First dimension explains", round(eig_vals[1, "variance.percent"], 1), "% of variance\n")
+            
+            # Create biplot
+            biplot_processed <- fviz_ca_biplot(ca_result_processed, repel = TRUE,
+                             col.row = "steelblue", col.col = "red") +
+              labs(title = paste("Correspondence Analysis:", str_to_title(gsub("_", " ", dataset_name))),
+                   subtitle = paste("Based on", sum(ca_matrix), "observations")) +
+              theme_minimal()
+            
+            print(biplot_processed)
+            
+            # Chi-square test
+            chi_test_processed <- chisq.test(ca_matrix)
+            cat("- Chi-square test: χ² =", round(chi_test_processed$statistic, 2), 
+                ", p-value =", format(chi_test_processed$p.value, scientific = TRUE), "\n")
+            
+            if(chi_test_processed$p.value < 0.05) {
+              cat("- ✓ Significant associations detected\n")
+            } else {
+              cat("- ⚠ No significant associations\n")
+            }
+            
+            return(TRUE)
+          } else {
+            cat("- ⚠ Insufficient dimensions for CA after filtering\n")
+            return(FALSE)
+          }
+        } else {
+          cat("- Dataset structure not suitable for CA analysis\n")
+          return(FALSE)
+        }
+      }
+    }, error = function(e) {
+      cat("- ❌ Error in analysis:", e$message, "\n")
+      return(FALSE)
+    })
+  }
+  
+  # Analyze key datasets that are suitable for CA
+  ca_priority_datasets <- c("transport_mode", "unloading_location", "unloading_equipment", 
+                           "temporal", "supply_frequency", "warehouse_ownership")
+  
+  successful_analyses <- 0
+  
+  for(dataset_name in ca_priority_datasets) {
+    if(dataset_name %in% names(valid_processed_datasets)) {
+      success <- analyze_processed_dataset(valid_processed_datasets[[dataset_name]], dataset_name)
+      if(success) successful_analyses <- successful_analyses + 1
+    }
+  }
+  
+  # Perception Analysis (special handling)
+  if("supply_perception" %in% names(valid_processed_datasets)) {
+    cat("\n**SUPPLY PERCEPTION DETAILED ANALYSIS:**\n")
+    perception_data <- valid_processed_datasets[["supply_perception"]]
+    
+    if(nrow(perception_data) > 0) {
+      # This might be a different format - let's examine and adapt
+      kable(head(perception_data), 
+            caption = "Supply Perception Data Structure")
+      
+      cat("- Supply perception data available with", nrow(perception_data), "observations\n")
+    }
+  }
+  
+  if("bike_perception" %in% names(valid_processed_datasets)) {
+    cat("\n**BIKE PERCEPTION DETAILED ANALYSIS:**\n")
+    bike_data <- valid_processed_datasets[["bike_perception"]]
+    
+    if(nrow(bike_data) > 0) {
+      kable(head(bike_data), 
+            caption = "Bike Perception Data Structure")
+      
+      cat("- Bike perception data available with", nrow(bike_data), "observations\n")
+    }
+  }
+  
+  # Summary of processed dataset analysis
+  cat("\n=== PROCESSED DATASETS ANALYSIS SUMMARY ===\n")
+  cat("- Total datasets examined:", length(ca_priority_datasets), "\n")
+  cat("- Successful CA analyses:", successful_analyses, "\n")
+  cat("- Additional perception datasets:", 
+      sum(c("supply_perception", "bike_perception") %in% names(valid_processed_datasets)), "\n")
+  
+  if(successful_analyses > 0) {
+    cat("✓ Successfully leveraged Python pipeline preprocessing for detailed categorical analysis\n")
+  } else {
+    cat("⚠ No successful CA analyses from processed datasets - using survey_data approach\n")
+  }
+  
+} else {
+  cat("No processed datasets available for advanced analysis\n")
 }
 ```
 
