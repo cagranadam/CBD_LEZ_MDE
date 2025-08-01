@@ -1,0 +1,409 @@
+---
+title: "OLS_models"
+author: "cagranadam"
+date: "2025-07-31"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Factor Analysis of Mixed Data (FAMD) → Clustering → Correspondence Analysis (CA)
+
+clean_df
+   │
+   ├─► explode/one-hot multi-label fields
+   │
+   ├─► FAMD  →  coordinates (orthogonal, mixed scale)
+   │
+   ├─► clustering on coordinates  →  cluster label
+   │
+   └─► contingency table (cluster × selected categorical)
+           └─► Correspondence Analysis → relational map
+
+
+```{r}
+# install.packages(c("FactoMineR", "factoextra", "tidyverse", "missMDA"))
+library(tidyverse)
+library(FactoMineR)
+library(factoextra)
+library(missMDA)
+
+df <- read_csv("C:\\Users\\cgranadamunoz\\OneDrive - Universidad Nacional de Colombia\\UCC - General\\CBD_MDE_2025\\data\\intermediate\\df_clean.csv",
+               locale = locale(encoding = "UTF-8"))
+
+# OPTIONAL --------------------------------------------------------------------
+# 1. Split multi-choice strings into binary dummies
+df <- df %>%
+  separate_rows(supply_day, sep = ";") %>%        # repeat rows OR
+  mutate(across(c(supply_day, supply_unloading),  # create binary indicators
+                ~ as.factor(trimws(.x))))
+
+# 2. Impute missing values (keeps mixed types consistent)
+# ncp = nb of dimensions kept for reconstruction; use estim_ncpFAMD(df)$ncp to pick
+imputed <- imputeFAMD(df, ncp = 5)
+df_imp  <- imputed$completeObs
+# -----------------------------------------------------------------------------
+
+# ----------  FAMD  -----------------------------------------------------------
+famd_res <- FAMD(df_imp, ncp = 10, graph = FALSE)
+
+fviz_screeplot(famd_res)                      # choose dims
+fviz_famd_ind(famd_res, repel = TRUE)         # observations
+fviz_famd_var(famd_res, repel = TRUE)         # variables
+
+# ----------  CLUSTERING on FAMD space  ---------------------------------------
+# Hierarchical clustering on principal components
+hcpc_res <- HCPC(famd_res, nb.clust = -1)     # -1 = let method pick optimal
+fviz_cluster(hcpc_res, repel = TRUE)
+
+# ----------  CORRESPONDENCE ANALYSIS  ----------------------------------------
+# For CA you need a contingency table; build one from the clusters
+ca_tab <- table(Cluster = hcpc_res$data.clust$clust,
+                EconMain = df_imp$econ_main)
+
+ca_res <- CA(ca_tab, graph = FALSE)
+fviz_ca_biplot(ca_res, repel = TRUE)
+
+
+
+
+
+```
+```{r}
+# -- adjust the paths if you keep the files elsewhere
+famd_path <- "C:/Users/cgranadamunoz/OneDrive - Universidad Nacional de Colombia/UCC - General/CBD_MDE_2025/data/intermediate/mario_clean.csv"
+ca_path   <- "C:/Users/cgranadamunoz/OneDrive - Universidad Nacional de Colombia/UCC - General/CBD_MDE_2025/data/intermediate/translated_survey.csv"
+
+df_famd <- read_csv(famd_path)       # already one-hot & numeric for FAMD
+df_ca   <- read_csv(ca_path)         # human-readable English categories
+spec(df_famd)   # detailed column spec for the FAMD file
+spec(df_ca)     # detailed column spec for the CA file
+
+
+
+```
+
+## Including Plots
+
+You can also embed plots, for example:
+
+```{r}
+# ────────────────────────────────────────────────────────────────
+#  Shared utilities
+# ────────────────────────────────────────────────────────────────
+library(tidyverse)
+
+pick_first_match <- function(txt, patterns) {
+  txt <- tolower(txt %||% "")
+  res <- keep(patterns, ~ str_detect(txt, fixed(tolower(.x), ignore_case = TRUE)))
+  if (length(res)) res[[1]] else NA_character_
+}
+
+split_tokens <- function(txt) {
+  txt %>% 
+    tolower() %>% 
+    str_split("[,;·]") %>% 
+    map(~ str_trim(.x)) %>% 
+    flatten_chr()
+}
+
+normalise_shares <- function(tbl, key, val, wt = NULL) {
+  tbl %>% 
+    count({{ key }}, {{ val }}, wt = {{ wt }}, name = "freq") %>% 
+    pivot_wider(names_from = {{ val }}, values_from = freq, values_fill = 0) %>% 
+    column_to_rownames(key = deparse(substitute(key))) %>% 
+    { . / rowSums(.) }                           # row-wise proportions
+}
+
+# Spanish establishment keywords → English label
+est_map <- c(
+  "Proveedor"         = "Supplier",
+  "Venta al detalle"  = "Retailer",
+  "Fabricante"        = "Manufacturer",
+  "Ventas por internet" = "E-commerce"
+)
+
+# ────────────────────────────────────────────────────────────────
+# 1  Establishment × Transportation Mode
+# ────────────────────────────────────────────────────────────────
+transportation_mode_tbl <- function(df) {
+  
+  modes_es <- c("camión","motocicleta","bicicleta","carreta","particular")
+  modes_en <- c(
+    "bicicleta"   = "Bicycle",
+    "camión"      = "Truck",
+    "carreta"     = "Handcart",
+    "motocicleta" = "Motorcycle",
+    "particular"  = "Private Vehicle"
+  )
+  
+  df %>% 
+    transmute(
+      est_type  = map_chr(economic_activity, pick_first_match, patterns = names(est_map)),
+      transp    = map(supply_unloading, ~ keep(modes_es, \(m) str_detect(tolower(.x), m)))
+    ) %>% 
+    unnest(transp) %>% 
+    filter(!is.na(est_type) & transp != "") %>% 
+    normalise_shares(est_type, transp) %>% 
+    rownames_to_column("Establishment") %>% 
+    mutate(Establishment = recode(Establishment, !!!est_map),
+           across(-Establishment, ~ set_names(.x, recode(names(.x), !!!modes_en))))
+}
+
+# ────────────────────────────────────────────────────────────────
+# 2  Establishment × Unloading Location
+# ────────────────────────────────────────────────────────────────
+unloading_location_tbl <- function(df) {
+  
+  loc_es <- c("sobre la vía","sobre el andén","bahía",
+              "internamente","vías aledañas","parqueadero")
+  loc_en <- c(
+    "sobre la vía"   = "On the road",
+    "sobre el andén" = "On the sidewalk",
+    "bahía"          = "Loading/unloading zone",
+    "internamente"   = "Establishment facilities",
+    "vías aledañas"  = "Nearby roads",
+    "parqueadero"    = "Parking lot"
+  )
+  
+  df %>% 
+    transmute(
+      est_type = map_chr(economic_activity, pick_first_match, patterns = names(est_map)),
+      loc      = map(supply_unloading, ~ keep(loc_es, \(l) str_detect(tolower(.x), l)))
+    ) %>% 
+    unnest(loc) %>% 
+    filter(!is.na(est_type) & loc != "") %>% 
+    normalise_shares(est_type, loc) %>% 
+    rownames_to_column("Establishment") %>% 
+    mutate(Establishment = recode(Establishment, !!!est_map),
+           across(-Establishment, ~ set_names(.x, recode(names(.x), !!!loc_en))))
+}
+
+# ────────────────────────────────────────────────────────────────
+# 3  Establishment × Unloading Equipment
+# ────────────────────────────────────────────────────────────────
+unloading_equipment_tbl <- function(df) {
+  
+  manual_kw <- c("caminata","camina","a mano","al hombro","personal externo",
+                 "descargue a mano","caminando","las personas","la misma persona")
+  none_kw   <- c("bahía","no hay bodega","no se requiere","no aplica","na","ninguno","ninguna","^1$")
+  
+  equip_en <- c(
+    "carretilla"     = "Handcart",
+    "elevador"       = "Elevator",
+    "montacargas"    = "Elevator",
+    "rampa fija"     = "Fixed Loading Ramp",
+    "rampa mecánica" = "Loading Ramp",
+    "gato hidráulico"= "Loading Ramp",
+    "manual"         = "Manual workforce",
+    "no"             = "None"
+  )
+  
+  recode_token <- function(tok) {
+    if (any(str_detect(tok, paste(manual_kw, collapse = "|")))) "manual"
+    else if (any(str_detect(tok, paste(none_kw,   collapse = "|")))) "no"
+    else tok
+  }
+  
+  df %>% 
+    transmute(
+      est_type = map_chr(economic_activity, pick_first_match, patterns = names(est_map)),
+      equip    = map(warehouse_equipement, ~ split_tokens(.x) |> map_chr(recode_token))
+    ) %>% 
+    unnest(equip) %>% 
+    filter(!is.na(est_type) & equip != "") %>% 
+    normalise_shares(est_type, equip) %>% 
+    rownames_to_column("Establishment") %>% 
+    mutate(Establishment = recode(Establishment, !!!est_map),
+           across(-Establishment, ~ set_names(.x, recode(names(.x), !!!equip_en)))) %>% 
+    select(Establishment, any_of(c("Handcart","Elevator","Fixed Loading Ramp",
+                                   "Loading Ramp","Manual workforce","None")))
+}
+
+# ────────────────────────────────────────────────────────────────
+# 4  Establishment × Supply Frequency
+# ────────────────────────────────────────────────────────────────
+supply_frequency_tbl <- function(df) {
+  
+  freq_en <- c(
+    "1 vez por semana" = "1 time a week",
+    "2"                = "2 times a week",
+    "3"                = "3 times a week",
+    "4"                = "4 times a week",
+    "5"                = "5 times a week",
+    "6 o más"          = "6 times or more a week",
+    "Other"            = "Other"
+  )
+  
+  df %>% 
+    transmute(
+      est_type = map_chr(economic_activity, pick_first_match, patterns = names(est_map)),
+      freq     = recode(supply_week,
+                        "La periodicidad es quincenal" = "Other",
+                        "La periodicidad es mensual"   = "Other") %>% as.character()
+    ) %>% 
+    filter(!is.na(est_type)) %>% 
+    normalise_shares(est_type, freq) %>% 
+    rownames_to_column("Establishment") %>% 
+    mutate(Establishment = recode(Establishment, !!!est_map),
+           across(-Establishment, ~ set_names(.x, recode(names(.x), !!!freq_en)))) %>% 
+    select(Establishment,
+           any_of(c("1 time a week","2 times a week","3 times a week",
+                    "4 times a week","5 times a week",
+                    "6 times or more a week","Other")))
+}
+
+
+
+```
+```{r}
+# 4. Suitability checks: KMO and Bartlett’s test
+library(psych)
+
+kmo <- KMO(fa_data)
+print(kmo)                # aim for overall MSA ≥ 0.6
+
+bartlett <- cortest.bartlett(fa_data)
+print(bartlett)           # want p < 0.05
+
+# 5. Exploratory Factor Analysis (3 factors)
+fa_result <- fa(
+  fa_data,
+  nfactors = 3,
+  rotate   = "varimax",
+  fm       = "pa"
+)
+
+# 6. Inspect loadings and plot
+print(fa_result$loadings, cutoff = 0.30)  # show only loadings ≥ |0.30|
+fa.diagram(fa_result)                     # visual diagram
+
+```
+The exploratory factor analysis produced mixed but informative results regarding the underlying logistics‐need dimensions. The overall Kaiser–Meyer–Olkin measure of sampling adequacy was 0.57, slightly below the conventional threshold of 0.6, indicating that the correlations among these six variables are borderline adequate for factor extraction; individual MSAs ranged from 0.43 (supply\_safety\_percep) to 0.63 (supply\_week and storage\_area), suggesting that the safety‐perception items may contribute less cohesively to a common factor. Bartlett’s test of sphericity was highly significant (χ²(15)=79.9, p<0.001), however, confirming that the covariance matrix differs from an identity matrix and justifying the search for latent structure. Three factors were extracted via principal‐axis factoring with varimax rotation, together accounting for 28.2 % of the total variance. The first factor (PA1) is defined primarily by storage\_height (loading = 0.66), which appears to capture the spatial capacity dimension. The second factor (PA2) loads strongly on supply\_safety\_percep (0.68), reflecting perceptions of security during truck‐based loading. The third factor (PA3) shows a moderate loading for supply\_week (0.48) and a negative loading for supply\_bic\_safety\_perception (–0.41), suggesting a temporal‐frequency dimension inversely related to bicycle‐loading comfort. Although the cumulative variance explained is modest, these three interpretable dimensions—storage capacity, safety perception, and delivery frequency—provide a parsimonious foundation for subsequent clustering and UCC‐location analysis.
+
+```{r clustering}
+# 1. Check for NAs in the factor scores
+sum(is.na(scores))        # how many NAs in total?
+colSums(is.na(scores))    # NAs by factor
+
+# 2. Keep only complete cases
+complete_idx  <- complete.cases(scores)
+scores_clean  <- scores[complete_idx, ]
+fa_scored_clean <- fa_scored[complete_idx, ]
+
+# 3. Run k-means on the cleaned score matrix
+set.seed(123)
+k3 <- kmeans(scores_clean, centers = 3, nstart = 25)
+
+# 4. Attach cluster labels
+fa_scored_clean$cluster <- factor(k3$cluster)
+
+# 5. Summarize each cluster’s profile
+library(dplyr)
+cluster_profiles <- fa_scored_clean %>%
+  group_by(cluster) %>%
+  summarise(
+    Avg_Deliveries     = mean(num_delivery,           na.rm = TRUE),
+    Avg_Storage_Height = mean(storage_height,         na.rm = TRUE),
+    Avg_Safety_Score   = mean(supply_safety_percep,   na.rm = TRUE),
+    Size               = n()
+  )
+
+print(cluster_profiles)
+
+```
+
+Once you run this, you’ll obtain three archetypes—perhaps a **high‐frequency, low‐storage** group that would most benefit from rapid UCC consolidation; a **high‐storage, moderate‐frequency** cohort that may self-supply; and a **high‐safety-concern, low-frequency** segment that could be served by off-peak micro-consolidation. From there, you can cross‐tabulate each cluster against `delivery_mean` (vehicle type) or map their addresses in `sf` to propose candidate sites on the LEZ boundary.
+
+The k-means clustering on the three latent “need” dimensions yielded three distinct establishment archetypes. **Cluster 1** (n=57) is characterized by **low delivery frequency** (mean 2.3 per day), **modest storage capacity** (mean height 2.8 m), and **low safety concern** (mean safety score 2.2). These are likely small, infrequent shippers—perhaps offices or micro-retailers—with limited warehousing and little sensitivity to handling risk. **Cluster 2** (n=135) exhibits similarly **low delivery volumes** (mean 2.5 per day) but **high safety perception scores** (mean 4.6) despite only moderate storage (mean height 2.6 m). This suggests niche or high-value establishments (e.g. boutiques or clinics) that demand secure, careful handling even though they ship infrequently. Finally, **Cluster 3** (n=86) shows **very high delivery intensity** (mean 11.4 per day), **larger storage facilities** (mean height 4.3 m), and **strong safety concerns** (mean 4.9), consistent with wholesalers or food-service outlets that both receive many shipments and require protective handling.
+
+These profiles imply differentiated UCC strategies: Cluster 3 could benefit most from perimeter consolidation hubs offering high‐throughput loading bays and secure handling protocols; Cluster 2 would value smaller, secure micro-consolidation points with emphasis on parcel integrity; and Cluster 1 might be served by shared drop-off lockers or bundled off-peak deliveries. Mapping these clusters spatially against the LEZ boundary will pinpoint candidate UCC sites that balance maximum volume capture (Cluster 3) with tailored service levels for safety-sensitive receivers (Cluster 2).
+
+
+```{r}
+```
+
+
+```{r}
+```
+
+```{r}
+```
+
+
+```{r}
+```
+
+
+```{r}
+```
+
+```{r}
+```
+
+
+```{r}
+```
+
+
+```{r}
+```
+
+```{r}
+```
+
+
+```{r}
+```
+
+
+```{r}
+```
+
+```{r}
+```
+
+
+```{r}
+```
+
+
+```{r}
+```
+
+```{r}
+```
+
+
+```{r}
+```
+
+
+```{r}
+```
+
+```{r}
+```
+
+
+```{r}
+```
+
+
+```{r}
+```
+
+```{r}
+```
+
+
+```{r}
+```
+
+
+```{r}
+```
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.

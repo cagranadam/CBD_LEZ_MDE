@@ -1,0 +1,593 @@
+---
+title: "Analysis_survey_CBD"
+author: "cagranadam"
+date: "2025-07-29"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r setup, include=FALSE}
+# 1. Install (if needed) and load libraries
+if (!requireNamespace("readxl", quietly=TRUE)) install.packages("readxl")
+if (!requireNamespace("tidyverse", quietly=TRUE)) install.packages("tidyverse")
+if (!requireNamespace("here", quietly=TRUE)) install.packages("here")
+library(readxl)
+library(tidyverse)
+library(here)
+
+# 2. (Optional) set working directory to project root (so paths are relative)
+# Uncomment and edit the line below if you want to hard‐code a path:
+# setwd("C:/Your/Path/To/Data/Folder")
+# 1) Define your file path once (using forward-slashes or escaped backslashes)
+raw_path <- "C:/Users/cgranadamunoz/OneDrive - Universidad Nacional de Colombia/UCC - General/CBD_MDE_2025/data/raw/03. Resultados_encuesta_logistica_ZUAP_20220927_v1.xlsx"
+
+```
+
+```{r}
+# 3. List all sheets in the Excel workbook to confirm sheet names/order
+excel_sheets(here("C:\\Users\\cgranadamunoz\\OneDrive - Universidad Nacional de Colombia\\UCC - General\\CBD_MDE_2025\\data\\raw\\03. Resultados_encuesta_logistica_ZUAP_20220927_v1.xlsx"))
+```
+
+## Including Plots
+
+You can also embed plots, for example:
+
+```{r pressure, echo=FALSE}
+# 4. Read only the first sheet into a tibble called `results`
+results <- read_excel(
+  path  = here("C:\\Users\\cgranadamunoz\\OneDrive - Universidad Nacional de Colombia\\UCC - General\\CBD_MDE_2025\\data\\raw\\03. Resultados_encuesta_logistica_ZUAP_20220927_v1.xlsx"),
+  sheet = 1
+  
+)
+
+# 5. Quick look at dimensions and column names
+dim(results)
+names(results)
+```
+
+
+```{r}
+# 6. Inspect a few rows and structure to see how items are coded
+glimpse(results)
+head(results, n = 10)
+
+```
+
+Notes on terms
+
+Identifier – not for modeling, but to track records.
+
+Binary categorical – true/false or yes/no questions.
+
+Nominal categorical – unordered categories (single‐ or multi‐select).
+
+Ordinal categorical – ordered categories or rankings.
+
+Numeric (count) – integer counts of people, trips, vehicles, etc.
+
+Numeric (continuous) – measures like area, height, cost, fuel efficiency.
+
+Date–time – full timestamps.
+
+Text – free‐form responses, addresses, emails, etc.
+
+Use this schema when you build your data dictionary section and when you define classes in R (e.g. col_types in readxl, or the vector of numeric vs. factor variables before factor analysis).
+
+---
+
+### How it works
+
+1. **Data dictionary**  
+   You declare in one place *every* column’s name, question text, your chosen schema type, and the exact `col_type` that readxl needs.  
+
+2. **Import with `col_types`**  
+   By passing `col_types = data_dict$col_type`, R will parse each column correctly (dates, text, numeric) and catch e.g. mis-typed values immediately.  
+
+3. **Type vectors for post-processing**  
+   You pull out lists of `count_cols`, `binary_cols`, etc., so that you can do bulk conversions with `dplyr::across()` rather than writing a separate line for each survey question.  
+
+4. **Extend as needed**  
+   - Add rows to `data_dict` for all your remaining questions.  
+   - For ordinal scales (1–5), include those in `data_dict` as `type = "ordinal"` and then convert them with `factor(..., ordered = TRUE, levels = c("1","2","3","4","5"))`.  
+   - Multi-select questions can remain character or be split with `tidyr::separate_rows()` after import.  
+
+This pattern both **documents** your survey in a human-readable table and **drives** your code so that reviewers can immediately see how each column is handled.
+
+```{r}
+# 1. Define your data dictionary as a tibble
+#    - `col_name` must exactly match the header in the Excel file
+#    - `label` is your human‐readable question text
+#    - `type` is your schema classification
+#    - `col_type` is the string you will pass to readxl::read_excel()
+library(tibble)
+
+data_dict <- tribble(
+  ~col_name,                                                                                                     ~label,                                                      ~type,                   ~col_type,
+  "id",                                                                                                           "ID",                                                        "identifier",            "numeric",
+  "db",                                                                                                           "DB source",                                                 "identifier",            "text",
+  "Marca temporal",                                                                                               "Timestamp",                                                 "datetime",              "date",
+  "Correo electrónico",                                                                                           "Email",                                                     "text_email",            "text",
+  "Nombre de la empresa",                                                                                         "Company Name",                                              "text",                  "text",
+  "Dirección de la empresa",                                                                                      "Company Address",                                           "text",                  "text",
+  "Teléfono de contacto",                                                                                         "Contact Phone",                                             "text_phone",            "text",
+  "Por favor indique el número de colaboradores que tiene su empresa o comercio",                                 "Number of Employees",                                       "count",                 "numeric",
+  "¿En su empresa o comercio cuentan con colaboradoras mujeres?",                                                 "Has Female Employees",                                      "binary",                "text",
+  "Por favor indique el número de mujeres que trabajan en su empresa o comercio",                                 "Number of Female Employees",                                "count",                 "numeric",
+  "Porcentaje mujeres",                                                                                           "Percent Female Employees",                                  "percent",               "numeric",
+  "De sus empleadas mujeres, ¿Cuántas hacen parte de la cadena de distribución del negocio (conducen, reparten domicilios, acompañan las entregas, etc.)?", 
+                                                                                                                 "Female Employees in Logistics",                            "count",                 "numeric",
+  "% mujeres en la distribución",                                                                                 "Percent Female in Logistics",                              "percent",               "numeric",
+  "De las mujeres vinculadas a la cadena logística de su empresa o comercio ¿Cuántas están vinculadas por contrato laboral?", 
+                                                                                                                 "Female Logistics Workers under Contract",                  "count",                 "numeric",
+  "% mujeres vinculadas",                                                                                         "Percent Female Contracted",                                 "percent",               "numeric",
+  "Entre sus colaboradoras mujeres, alguna(s) se identifica(n) con los siguientes grupos poblacionales:",         "Vulnerable Groups among Female Employees",                 "multi_nominal",         "text",
+  "¿Acompañan y/o apoyan el proceso formativo de las mujeres que hacen parte de la cadena logística?",           "Supports Training of Female Logistics Workers",             "binary",                "text",
+  "Por favor, indique dentro de las siguientes categorías, cuál se relaciona con la actividad realizada en su comercio:", 
+                                                                                                                 "Business Activity Category",                               "nominal",               "text",
+  "De acuerdo al listado señale en orden de importancia las 3 principales actividades comerciales que se desarrollan en su establecimiento:", 
+                                                                                                                 "Top 3 Business Activities (ranked)",                       "ordinal_rank",          "text",
+  "Productos principales",                                                                                        "Main Products",                                             "nominal",               "text",
+  "¿Su establecimiento cuenta con espacio de bodega o almacenamiento de mercancías o productos?",                 "Has Warehouse/Storage Space",                              "binary",                "text",
+  "¿Con cuántos espacios de bodega cuenta?",                                                                      "Number of Storage Spaces",                                  "count",                 "numeric",
+  "¿En qué piso se ubica(n) la(s) bodegas que sirven a su empresa o comercio?",                                   "Warehouse Floor Level",                                     "ordinal_floor",         "numeric",
+  "Por favor, indique el área de la bodega que sirve a su comercio en metros cuadrados:",                        "Warehouse Area (m²)",                                       "continuous",            "numeric",
+  "Por favor, indique la altura en metros de la bodega que sirve a su comercio:",                                "Warehouse Height (m)",                                      "continuous",            "numeric",
+  "¿El(los) espacio(s) de bodega están ubicados al interior de la ZUAP?",                                          "Warehouse inside LEZ",                                      "binary",                "text",
+  "¿En qué municipio se encuentra ubicada la bodega que sirve a su comercio?",                                    "Warehouse Municipality",                                    "nominal",               "text",
+  "Por favor, indique el tipo de bodega con la que cuenta:",                                                      "Warehouse Type",                                            "nominal",               "text",
+  "Por favor, seleccione los días en los cuales recibe materiales, materias primas o productos:",                 "Receiving Days",                                            "multi_nominal",         "text",
+  "¿Cuántas veces por semana abastece su establecimiento?",                                                        "Supply Frequency (per week)",                              "ordinal_frequency",     "text",
+  "Por favor, indique los horarios durante los cuales realiza las actividades de cargue y descargue de las mercancías:", 
+                                                                                                                 "Loading/Unloading Time Windows",                           "multi_nominal",         "text",
+  "Por favor, indique la forma en la que ingresa la mercancía a su comercio o área de bodega:",                   "Loading Method",                                            "multi_nominal",         "text",
+  "En una escala de 1 a 5, donde 1 es \"Muy inseguro\" y 5 \"Muy seguro\", ¿considera usted que el proceso de cargue y descargue de mercancías en camión, carro o motocicleta es?", 
+                                                                                                                 "Safety Perception: Truck Loading (1–5)",                  "ordinal_scale",         "numeric",
+  "En una escala de 1 a 5, donde 1 es \"Muy inseguro\" y 5 \"Muy seguro\", ¿considera usted que el proceso de cargue y descargue de mercancías en bicicleta es?", 
+                                                                                                                 "Safety Perception: Bike Loading (1–5)",                   "ordinal_scale",         "numeric",
+  "¿El establecimiento o bodega posee alguno de los siguientes elementos para el cargue y descargue de mercancías?", 
+                                                                                                                 "Loading Equipment Owned",                                   "multi_nominal",         "text",
+  "¿Qué medio realiza para el envío de sus artículos a domicilio?",                                              "Home Delivery Vehicle",                                    "nominal",               "text",
+  "¿Cuántos domicilios realiza a diario su establecimiento?",                                                      "Daily Home Deliveries",                                    "count",                 "numeric",
+  "¿Qué medio realiza para el envío de sus ventas por internet?",                                                "Online Sales Delivery Method",                             "nominal",               "text",
+  "¿Cuántos envíos de artículos vendidos por internet realiza a diario su establecimiento?",                       "Daily Online Deliveries",                                  "count",                 "numeric",
+  "Ir al fin de la encuesta.",                                                                                    "End of Survey",                                            "ignore",                "skip",
+  "De acuerdo con el tipo de carga que distribuye su empresa, indique máximo 3 tipos en el siguiente listado:",    "Top 3 Cargo Types",                                        "multi_nominal",         "text",
+  "¿El origen de la mercancía que transporta es el Valle de Aburrá?",                                            "Origin in Valle de Aburrá?",                               "binary",                "text",
+  "Por favor, indique el municipio:",                                                                            "Origin Municipality",                                      "nominal",               "text",
+  "Por favor, indique cuántas entregas hace en el centro de Medellín al día:",                                   "Daily Deliveries to Medellín CBD",                         "count",                 "numeric",
+  "Por favor, indique el número de establecimientos que surte en el centro de Medellín a diario:",                "Daily CBD Establishments Served",                          "count",                 "numeric",
+  "¿Cuántos pedidos recibe su empresa diariamente que tienen como destino el centro de Medellín?",                "Daily CBD Orders Received",                                "count",                 "numeric",
+  "Por favor indique la cantidad de vehículos con combustión a diésel (ACPM) con los que cuenta su empresa:",    "Number of Diesel Vehicles",                                "count",                 "numeric",
+  "Por favor indique la cantidad de vehículos con combustión a gasolina con los que cuenta su empresa:",         "Number of Gasoline Vehicles",                              "count",                 "numeric",
+  "Por favor indique la cantidad de vehículos con combustión a gas natural vehicular (GNV) con los que cuenta su empresa:", 
+                                                                                                                 "Number of CNG Vehicles",                                   "count",                 "numeric",
+  "Por favor indique la cantidad de vehículos con motor eléctrico con los que cuenta su empresa:",               "Number of Electric Vehicles",                              "count",                 "numeric",
+  "Por favor, indique el rango de edad promedio del parque vehicular de su empresa [Modelos anteriores a 1990]",  "Vehicle Age <1990",                                       "ordinal_ageband",       "text",
+  "Por favor, indique el rango de edad promedio del parque vehicular de su empresa [Modelos entre 1991 y 2000]",  "Vehicle Age 1991–2000",                                   "ordinal_ageband",       "text",
+  "Por favor, indique el rango de edad promedio del parque vehicular de su empresa [Modelos entre 2001 y 2010]",  "Vehicle Age 2001–2010",                                   "ordinal_ageband",       "text",
+  "Por favor, indique el rango de edad promedio del parque vehicular de su empresa [Modelos entre 2011 y 2015]",  "Vehicle Age 2011–2015",                                   "ordinal_ageband",       "text",
+  "Por favor, indique el rango de edad promedio del parque vehicular de su empresa [Modelos del 2016 en adelante]", 
+                                                                                                                 "Vehicle Age ≥2016",                                         "ordinal_ageband",       "text",
+  "¿Cuánto es el rendimiento en galones/kilómetro, de sus vehículos a ACPM?",                                      "Diesel Efficiency (gal/km)",                              "continuous",            "numeric",
+  "¿Cuánto es el rendimiento en galones/kilómetro, de sus vehículos a gasolina?",                                 "Gasoline Efficiency (gal/km)",                            "continuous",            "numeric",
+  "¿Cuánto es el rendimiento en metros cúbicos/kilómetro, de sus vehículos a GNV?",                             "CNG Efficiency (m³/km)",                                  "continuous",            "numeric",
+  "¿Cuánto es el rendimiento kilowatt-hora, de sus vehículos eléctricos?",                                         "Electric Efficiency (kWh/km)",                            "continuous",            "numeric",
+  "¿Cuánto es el costo total por movilizar un camión cargado hacia el centro de Medellín?",                      "Cost per Truck Trip to CBD",                              "continuous",            "numeric",
+  "¿Cuántas horas al volante permanece durante un turno de reparto una/un conductora/or en su empresa?",            "Driver Hours per Shift",                                  "continuous",            "numeric",
+  "De acuerdo con la siguiente escala, donde 1 es \"Muy compleja\" y 5 es \"Muy adecuada\" ¿Cómo considera la relación de sus conductores con los demás actores viales (peatones, ciclistas, conductores, transporte público) en el espacio público de la ZUAP?", 
+                                                                                                                 "Driver–Road User Interaction (1–5)",                      "ordinal_scale",         "numeric",
+  "¿Al interior de su empresa se realizan actividades que promuevan la actividad física entre sus calaboradoras/es?", 
+                                                                                                                 "Physical Activity Programs for Staff",                    "binary",                "text",
+  "¿Qué actividades se realizan?",                                                                               "Types of Physical Activities",                            "multi_nominal",         "text",
+  "¿Cuántas veces por semana se realizan actividades para promover la actividad física?",                         "Physical Activity Frequency (per week)",                  "count",                 "numeric",
+  "¿Conoce usted el Decreto No 1790 de noviembre 20 de 2012 (Decreto de Zona Amarilla o de cargue y descargue en el centro de la ciudad)?", 
+                                                                                                                 "Knows Decree 1790/2012",                                   "binary",                "text"
+)
+
+# Inspect to make sure all 66 entries are present:
+nrow(data_dict)  # should be 66
+
+# 1. Pull out all the lists by type
+count_vars        <- filter(data_dict, type == "count")             %>% pull(col_name)
+continuous_vars   <- filter(data_dict, type == "continuous")        %>% pull(col_name)
+binary_vars       <- filter(data_dict, type == "binary")            %>% pull(col_name)
+ordinal_scale_vars<- filter(data_dict, type == "ordinal_scale")     %>% pull(col_name)
+ordinal_freq_vars <- filter(data_dict, type == "ordinal_frequency") %>% pull(col_name)
+ordinal_ageband   <- filter(data_dict, type == "ordinal_ageband")   %>% pull(col_name)
+nominal_vars      <- filter(data_dict, type == "nominal")           %>% pull(col_name)
+multi_nominal_vars<- filter(data_dict, type == "multi_nominal")     %>% pull(col_name)
+```
+
+
+```{r}
+library(readxl)
+library(dplyr)
+library(forcats)
+
+# 1) Read the sheet as-is
+raw <- read_excel(
+  path  = raw_path,
+  sheet = 1
+)
+# -> raw will have 66 columns named exactly as in the file
+
+# 2) Overwrite those names with your exact 66 labels
+raw <- raw %>% set_names(data_dict$col_name)
+
+# 3) Pull your name‐lists (you already did this, but just to be clear):
+count_vars         <- filter(data_dict, type == "count")          %>% pull(col_name)
+continuous_vars    <- filter(data_dict, type == "continuous")     %>% pull(col_name)
+binary_vars        <- filter(data_dict, type == "binary")         %>% pull(col_name)
+ordinal_scale_vars <- filter(data_dict, type == "ordinal_scale")  %>% pull(col_name)
+ordinal_freq_vars  <- filter(data_dict, type == "ordinal_frequency") %>% pull(col_name)
+ordinal_ageband    <- filter(data_dict, type == "ordinal_ageband")   %>% pull(col_name)
+nominal_vars       <- filter(data_dict, type == "nominal")        %>% pull(col_name)
+multi_nominal_vars <- filter(data_dict, type == "multi_nominal")  %>% pull(col_name)
+
+# 4) Convert types in one pipeline
+raw_typed <- raw %>%
+  mutate(across(all_of(count_vars),         as.integer)) %>%
+  mutate(across(all_of(continuous_vars),    as.numeric)) %>%
+  mutate(across(all_of(binary_vars),        ~ factor(.x, levels = c("No","Sí")))) %>%
+  mutate(across(all_of(ordinal_scale_vars), ~ factor(.x, levels = 1:5, ordered = TRUE))) %>%
+  mutate(across(all_of(ordinal_freq_vars),  ~ factor(.x,
+                                                     levels = c("1","2","3","4","5","6 o más"),
+                                                     ordered = TRUE))) %>%
+  mutate(across(all_of(ordinal_ageband),    ~ factor(.x,
+                                                     levels = c(
+                                                       "Modelos anteriores a 1990",
+                                                       "Modelos entre 1991 y 2000",
+                                                       "Modelos entre 2001 y 2010",
+                                                       "Modelos entre 2011 y 2015",
+                                                       "Modelos del 2016 en adelante"
+                                                     ),
+                                                     ordered = TRUE))) %>%
+  mutate(across(all_of(nominal_vars),       as.factor))
+
+# 5) (Optional) split your multi-selects to long form
+library(tidyr)
+library(rlang)
+
+raw_long <- raw_typed
+
+for(col in multi_nominal_vars) {
+  # turn the string column name into a symbol for tidy evaluation
+  col_sym <- sym(col)
+  
+  raw_long <- raw_long %>%
+    separate_rows(!!col_sym, sep = "\\s*[,;]\\s*") %>%
+    # optional: drop any empty strings that appear after splitting
+    filter(!!col_sym != "")
+}
+
+
+# Quick check
+glimpse(raw_typed)
+
+```
+## 1. Hypotheses
+
+**H1 (Dimensionality)**  
+The observed survey items reflecting storage constraints, delivery frequency, and safety perceptions collapse into three latent “logistics‐need” factors:  
+1. Consolidation Urgency  
+2. Emission & Safety Concern  
+3. Temporal Flexibility  
+
+**H2 (Segmentation)**  
+Establishments form distinct clusters (archetypes) in the factor‐score space—e.g., “high-need high-emission”, “low-frequency flexible” etc.—that differ in their supply attributes (vehicle fleet, storage capacity).
+
+**H3 (Supply–Demand Alignment)**  
+Cluster membership associates significantly with categorical supply features (e.g. `Home Delivery Vehicle`, `Warehouse inside LEZ`), as tested via correspondence analysis.
+
+---
+
+## 2. Factor Analysis
+
+```{r libraries-efa, message=FALSE}
+library(dplyr); library(psych); library(ggplot2)
+library(tidyr)
+
+
+# 2.1 Subset & convert to numeric
+efa_items <- raw_typed %>%
+  select(all_of(ordinal_scale_vars),
+         all_of(ordinal_freq_vars),
+         all_of(ordinal_ageband)) %>%
+  mutate(
+    across(all_of(ordinal_scale_vars), as.integer),
+    across(all_of(ordinal_freq_vars), ~ as.integer(as.character(.x))),
+    across(all_of(ordinal_ageband),    as.integer)
+  )
+
+# 2.2 Compute variances, keep only > 0
+var_tbl <- efa_items %>%
+  summarise(across(everything(), ~ var(.x, na.rm=TRUE))) %>%
+  pivot_longer(everything(), names_to="col", values_to="variance")
+
+vars_nonzero <- var_tbl %>%
+  filter(!is.na(variance) & variance > 0) %>%
+  pull(col)
+
+efa_items <- efa_items %>% select(all_of(vars_nonzero))
+
+# 2.3 Drop rows with >25% missing
+missing_pct <- rowMeans(is.na(efa_items))
+efa_items <- efa_items[missing_pct <= 0.25, ]
+
+# 2.4 **Column-wise mean imputation** for any remaining NAs
+efa_items <- efa_items %>%
+  mutate(across(
+    everything(),
+    ~ ifelse(is.na(.x), mean(.x, na.rm = TRUE), .x)
+  ))
+
+# Quick check
+print(head(efa_items))
+print(sapply(efa_items, function(x) sum(is.na(x))))
+
+
+```
+
+
+```{r}
+# 3. KMO & Bartlett
+kmo_res  <- psych::KMO(efa_items)
+bart_res <- psych::cortest.bartlett(efa_items)
+print(kmo_res)
+print(bart_res)
+
+# 4. Parallel analysis and EFA
+fa.parallel(efa_items, fa="fa")
+efa_res <- psych::fa(efa_items, nfactors = 2, rotate="varimax", fm="pa")
+print(efa_res$loadings, cut=0.3)
+
+
+```
+
+
+
+```{r}
+```
+
+
+```{r}
+```
+
+
+
+```{r reliability-and-efa, message=FALSE, warning=FALSE}
+# 6) Reliability & suitability for factor analysis
+
+# We’ll use the psych package for α, KMO, Bartlett
+if (!requireNamespace("psych", quietly=TRUE)) install.packages("psych")
+library(psych)
+
+# 6.1 Select only the survey items you want to include in the factor analysis.
+#    Here I’m assuming all your “count” and “continuous” variables are scale items.
+#    Adjust this vector to the exact names of your Likert‐style or metric questions.
+efa_items <- raw_typed %>%
+  select(all_of(c(count_vars, continuous_vars))) %>%
+  # if any non‐numeric sneaked in, force conversion
+  mutate(across(everything(), as.numeric))
+
+# 6.2 Cronbach’s alpha (internal consistency)
+alpha_res <- psych::alpha(efa_items)
+print(alpha_res$total)    # overall α
+print(alpha_res$alpha.drop)  # α if item dropped
+
+# 6.3 KMO measure of sampling adequacy
+kmo_res <- psych::KMO(efa_items)
+print(kmo_res)            # KMO overall and per-item
+
+# 6.4 Bartlett’s test of sphericity
+bart_res <- psych::cortest.bartlett(efa_items)
+print(bart_res)
+
+# 7) Parallel analysis + EFA
+
+# 7.1 Parallel analysis to suggest number of factors
+fa.parallel(
+  efa_items,
+  fa="fa",
+  n.iter=100,         # increase for more stable results
+  show.legend=FALSE,
+  main="Parallel Analysis Scree Plot"
+)
+
+# 7.2 Extract factors (e.g. 3 factors, varimax rotation)
+n_factors <- 3  # set based on parallel analysis
+efa_res <- psych::fa(
+  efa_items,
+  nfactors = n_factors,
+  rotate    = "varimax",
+  fm        = "pa"    # principal axis factoring
+)
+
+# 7.3 Display loadings
+print(efa_res$loadings, cut = 0.3)  # show loadings ≥ |0.30|
+
+# 7.4 Extract factor scores back into your data  
+raw_with_scores <- raw_typed %>%
+  bind_cols(as_tibble(efa_res$scores))  # columns F1, F2, F3…
+
+# 7.5 (Optional) look at the first few rows
+head(raw_with_scores)
+
+
+
+```
+
+
+```{r}
+```
+
+
+```{r}
+```
+
+
+
+```{r}
+```
+
+
+```
+
+
+```{r}
+```
+
+
+```{r}
+```
+
+
+```{r}
+```
+
+
+```{r}
+```
+
+
+
+```{r}
+```
+
+
+```{r}
+```
+
+
+```{r}
+```
+
+
+```{r}
+```
+
+
+```{r}
+```
+
+
+```{r}
+```
+
+
+```{r}
+```
+
+
+```{r}
+```
+
+
+```{r}
+```
+
+
+```{r}
+```
+
+
+```{r}
+```
+
+
+```{r}
+```
+
+
+```{r}
+```
+
+
+```{r}
+```
+
+
+```{r}
+```
+
+
+```{r}
+```
+
+
+```{r}
+```
+
+
+```{r}
+```
+
+
+```{r}
+```
+
+
+```{r}
+```
+
+```{r}
+```
+
+
+```{r}
+```
+
+
+```{r}
+```
+
+
+```{r}
+```
+
+
+```{r}
+```
+
+```{r}
+```
+
+
+```{r}
+```
+
+
+```{r}
+```
+
+
+```{r}
+```
+
+
+```{r}
+```
+
+```{r}
+```
+
+
+```{r}
+```
+
+
+```{r}
+```
+
+
+```{r}
+```
+
+
+```{r}
+```
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
