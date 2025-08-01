@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # coding: utf-8
 
-# In[496]:
+# In[1]:
 
 
 import pandas as pd
@@ -10,7 +10,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 
-# In[519]:
+# In[2]:
 
 
 def dataframe_cleaning(path):
@@ -89,16 +89,17 @@ def dataframe_cleaning(path):
     return df
 
 
-# In[521]:
+# In[4]:
 
 
-path = "database/03. Resultados_encuesta_logistica_ZUAP_20220927_v1.xlsx"
+#path = "database/03. Resultados_encuesta_logistica_ZUAP_20220927_v1.xlsx"
+path=r"C:\Users\cgranadamunoz\OneDrive - Universidad Nacional de Colombia\UCC - General\CBD_MDE_2025\data\raw\03. Resultados_encuesta_logistica_ZUAP_20220927_v1.xlsx"
 df = dataframe_cleaning(path)
 
 
 # # Analysis and Plots
 
-# In[499]:
+# In[5]:
 
 
 # Function to compute temporal analysis
@@ -135,7 +136,7 @@ def temporal_analysis(df):
     return temporal_variation
 
 
-# In[500]:
+# In[6]:
 
 
 heatmap = temporal_analysis(df)
@@ -143,7 +144,7 @@ heatmap = temporal_analysis(df)
 heatmap
 
 
-# In[501]:
+# In[7]:
 
 
 ########################## Type of Establishment vs Delivery Transportation Mode
@@ -289,7 +290,7 @@ def supply_frequency(df):
     return df
 
 
-# In[502]:
+# In[8]:
 
 
 ############################### 
@@ -345,7 +346,7 @@ def plots_type_of_establishments(data_dict, horizontal_plots, vertical_plots):
     return fig
 
 
-# In[503]:
+# In[9]:
 
 
 # Compute Stacked Bar Plots
@@ -366,7 +367,7 @@ plot_dict = {'a) Transportation Mode of the Supplier': {'data': transp_mode, 'le
 plots = plots_type_of_establishments(plot_dict, 2, 2)
 
 
-# In[504]:
+# In[10]:
 
 
 def warehouse_ownership(df):
@@ -422,7 +423,7 @@ def warehouse_in_zuap(df):
     return df
 
 
-# In[505]:
+# In[11]:
 
 
 warehouse = warehouse_ownership(df)
@@ -436,7 +437,7 @@ plot_dict1 = {'a) Type of Warehouse Usage Scheme': {'data': warehouse, 'legend_t
 plots1 = plots_type_of_establishments(plot_dict1, 2, 1)
 
 
-# In[506]:
+# In[12]:
 
 
 def e_commerce_deliveries(df):
@@ -482,7 +483,7 @@ def e_commerce_deliveries(df):
     return df
 
 
-# In[507]:
+# In[13]:
 
 
 def traditional_deliveries(df):
@@ -525,7 +526,7 @@ def traditional_deliveries(df):
    return df
 
 
-# In[ ]:
+# In[14]:
 
 
 deliveries = traditional_deliveries(df)
@@ -539,7 +540,7 @@ plot_dict2 = {'a) Traditional Deliveries': {'data': deliveries, 'legend_title': 
 plots2 = plots_type_of_establishments(plot_dict2, 2, 1)
 
 
-# In[517]:
+# In[15]:
 
 
 def supply_perception(df):
@@ -583,7 +584,7 @@ def bike_perception(df):
     return df
 
 
-# In[518]:
+# In[16]:
 
 
 supply_perception = supply_perception(df)

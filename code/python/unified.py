@@ -33,6 +33,7 @@ import re
 import unicodedata
 from pathlib import Path
 from typing import Optional, Union, Dict, List
+import os
 
 import numpy as np
 import pandas as pd
@@ -661,155 +662,7 @@ def clean_survey_for_analysis(
                 df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
     
     return df
-    """Return cleaned DataFrame ready for analysis & plotting."""
-    # ── 3.1 read raw --------------------------------------------------------
-    df = pd.read_excel(path, sheet_name=sheet)
-
-    # ── 3.2 standardise headers -------------------------------------------
-    df.columns = df.columns.str.strip().str.lower()
-
-    # ── 3.3 drop non-informative columns ----------------------------------
-    drop_lower = {c.lower() for c in DROP_COLS}
-    df = df.drop(columns=[c for c in df.columns if c in drop_lower], errors="ignore")
-
-    # ── 3.4 rename to concise English idents ------------------------------
-    rename_lower = {k.lower(): v for k, v in RENAME_MAP.items()}
-    df = df.rename(columns=rename_lower)
-
-    # ── 3.5 basic tidying --------------------------------------------------
-    # strip strings
-    for col in df.select_dtypes(include="object").columns:
-        df[col] = df[col].map(lambda x: x.strip() if isinstance(x, str) else x)
-
-    # parse timestamp if still present
-    if "marca temporal" in df.columns:
-        df["marca temporal"] = pd.to_datetime(df["marca temporal"], errors="coerce")
-
-    df = df.drop_duplicates()
-
-    # ── 3.6 type conversions ---------------------------------------------
-    # counts & numeric measures
-    NUMERIC_COLS = [
-        "number_warehouse", "warehouse_area", "warehouse_height",
-        "num_deliveries", "num_online_deliveries", "employees", "female_employees",
-        "female_emplo_distri", "female_distri_vincu",
-    ]
-    for col in NUMERIC_COLS:
-        if col in df.columns:
-            df[col] = pd.to_numeric(df[col], errors="coerce")
-
-    # percentages
-    PCT_COLS = ["women_distri_percentage", "hired_women_percentage"]
-    for col in PCT_COLS:
-        if col in df.columns:
-            df[col] = pd.to_numeric(df[col], errors="coerce")
-
-    # Additional derived percentage calculations (if base columns exist)
-    if "female_employees" in df.columns and "employees" in df.columns:
-        df["female_percentage"] = (df["female_employees"] / df["employees"] * 100).round(2)
-    
-    if "female_emplo_distri" in df.columns and "female_employees" in df.columns:
-        df["pct_female_in_distribution"] = (
-            df["female_emplo_distri"] / df["female_employees"] * 100
-        ).round(2)
-    
-    if "female_distri_vincu" in df.columns and "female_emplo_distri" in df.columns:
-        df["pct_female_with_contract"] = (
-            df["female_distri_vincu"] / df["female_emplo_distri"] * 100
-        ).round(2)
-
-    # likert 1-5
-    likert = CategoricalDtype(categories=[1, 2, 3, 4, 5], ordered=True)
-    for col in ["supply_safety_percep", "supply_bic_safety_perception"]:
-        if col in df.columns:
-            df[col] = pd.to_numeric(df[col], errors="coerce").astype(likert)
-
-    # floors as ordered categorical (keep raw text but ordered by numeric part)
-    if "warehouse_floor" in df.columns:
-        floors = sorted(df["warehouse_floor"].dropna().unique(), key=lambda x: float(re.sub(r"[^0-9.-]", "", str(x)) or 0))
-        df["warehouse_floor"] = df["warehouse_floor"].astype(CategoricalDtype(categories=floors, ordered=True))
-
-    # supply frequency numeric & ordered
-    if "supply_week" in df.columns:
-        freq_map = {
-            "1 vez por semana": 1,
-            "2": 2,
-            "5": 5,
-            "6 o más": 6,
-            "la periodicidad es quincenal": 2,
-            "la periodicidad es mensual": 1,
-        }
-        df["supply_frequency_num"] = (
-            df["supply_week"].map(str).str.lower().map(freq_map).fillna(0).astype(int)
-        )
-        df["supply_frequency_num"] = df["supply_frequency_num"].astype(
-            CategoricalDtype(categories=[1, 2, 5, 6], ordered=True)
-        )
-
-    # cast common single-label categoricals
-    CAT_COLS = [
-        "main_products",
-        "warehouse",
-        "zuap_warehouse",
-        "warehouse_municipality",
-        "warehouse_type",
-        "economic_activity",
-        "female_support",
-    ]
-    for col in CAT_COLS:
-        if col in df.columns:
-            df[col] = df[col].astype("category")
-
-    # multi-label text kept as strings for later explode
-    MULTI_TEXT = [
-        "specific_activity",
-        "supply_day",
-        "supply_schedule",
-        "supply_unloading",
-        "warehouse_equipement",
-        "delivery_transp_mode",
-        "online_trans_mode",
-        "female_popg",
-    ]
-    for col in MULTI_TEXT:
-        if col in df.columns:
-            df[col] = df[col].astype(str)
-
-    # ── 3.7 basic normalisation -------------------------------------------
-    YESNO = {"sí": "yes", "si": "yes", "no": "no", "no aplica": pd.NA}
-    if "zuap_warehouse" in df.columns:
-        df["zuap_warehouse"] = (
-            df["zuap_warehouse"].map(_normalize_text).replace(YESNO).astype("category")
-        )
-
-    if "main_products" in df.columns:
-        df["main_products"] = df["main_products"].map(_normalize_text).astype("category")
-
-    # ── 3.8 economic activity split (keep original + 3 levels) -------------
-    main_cats = ["Venta al detalle", "Fabricante", "Proveedor", "Ventas por internet"]
-
-    def _split_econ(x):
-        if pd.isna(x):
-            return pd.Series([pd.NA, pd.NA, pd.NA])
-        main = next((m for m in main_cats if x.startswith(m)), None)
-        if main is None:
-            return pd.Series([x, pd.NA, pd.NA])
-        rest = x[len(main) :].strip()
-        if not rest:
-            return pd.Series([main, pd.NA, pd.NA])
-        parts = re.findall(r"([A-ZÁÉÍÓÚÑ][^A-ZÁÉÍÓÚÑ]*)", rest)
-        sub1 = parts[0].strip() if len(parts) >= 1 else pd.NA
-        sub2 = parts[1].strip() if len(parts) >= 2 else pd.NA
-        return pd.Series([main, sub1, sub2])
-
-    if "economic_activity" in df.columns:
-        econ_split = df["economic_activity"].astype(str).apply(_split_econ)
-        df[["econ_main", "econ_sub1", "econ_sub2"]] = econ_split
-        for col in ["econ_main", "econ_sub1", "econ_sub2"]:
-            df[col] = df[col].astype("category")
-
-    return df
-
+ 
 ###############################################################################
 # 4.  ANALYSIS UTILITY FUNCTIONS                                             ##
 ###############################################################################
@@ -1075,7 +928,7 @@ def create_analysis_datasets(df_clean: pd.DataFrame) -> dict:
     --------
     dict
         Dictionary containing different dataset formats:
-        - 'basic': Basic cleaned data
+        - 'basic': Core cleaned data
         - 'translated': Data with English translations  
         - 'famd_ready': One-hot encoded data for FAMD
         - 'r_optimized': R-optimized format with proper factors
@@ -1182,24 +1035,6 @@ def main():
     
     print(f"\n✅ Comprehensive cleaning complete! Data shape: {df_clean.shape}")
     print(f"✅ Variables: {len(df_clean.columns)} total")
-    
-    # Display detailed summary
-    print("\n📊 Detailed Data Summary:")
-    numeric_vars = df_clean.select_dtypes(include=[np.number]).columns
-    categorical_vars = df_clean.select_dtypes(include=['category']).columns  
-    text_vars = df_clean.select_dtypes(include=['object']).columns
-    
-    print(f"   • Numeric variables: {len(numeric_vars)}")
-    if len(numeric_vars) > 0:
-        print(f"     {list(numeric_vars)}")
-    
-    print(f"   • Categorical variables: {len(categorical_vars)}")
-    if len(categorical_vars) > 0:
-        print(f"     {list(categorical_vars)}")
-        
-    print(f"   • Text/Multi-label variables: {len(text_vars)}")
-    if len(text_vars) > 0:
-        print(f"     {list(text_vars)}")
     
     # Show establishment type distribution
     if 'establishment_type' in df_clean.columns:
