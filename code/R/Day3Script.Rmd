@@ -1,0 +1,488 @@
+---
+title: "Day3Script"
+author: "Roma Siugzdaite"
+date: "2024-03-12"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## ###################################
+## Correspondence analysis
+## ###################################
+
+Read the data 
+
+```{r, echo=TRUE }
+
+coffee <- read.csv("coffee.txt", stringsAsFactors=TRUE)
+
+```
+
+## Contingency table
+
+```{r , echo=TRUE}
+
+library("FactoMineR")
+library("factoextra")
+
+coffee.table <- xtabs(freq ~ image + brand, data=coffee)
+mosaicplot(coffee.table, color = (1:6), main = "Brand vs image")
+
+```
+
+```{r}
+
+library(ISLR)
+library(tidyverse)
+library(Rfast)
+library(MASS)
+
+
+coffee.tbl.stand <- prop.table(coffee.table)
+addmargins(coffee.tbl.stand)
+
+```
+Statistical Tests
+
+We can apply the following statistical tests in order to test if the relationship of these two variables is independent or not.
+
+Chi-Square Test
+
+We have explained the Chi-Square Test in a previous post. Let’s run it in R:
+```{r}
+
+chisq.test(coffee.tbl.stand)
+
+
+```
+As we can see the p-value is more than 5% thus we can accept the null hypothesis that the image is dependent to brand.!!!!
+
+Log Likelihood Ratio
+
+Another test that we can apply is the Log Likelihood Ratio using the MASS package:
+
+
+
+```{r}
+loglm( ~ 1 + 2, data = coffee.tbl.stand) 
+```
+Again, we accepted the null hypothesis.
+
+```{r}
+
+CA(coffee.tbl.stand, ncp = 5, graph = TRUE)
+
+res.ca <- CA(coffee.tbl.stand, graph = FALSE)
+
+eig.val <- get_eigenvalue(res.ca)
+eig.val
+
+fviz_screeplot(res.ca, addlabels = TRUE, ylim = c(0, 65))
+
+```
+
+
+
+```{r}
+# repel= TRUE to avoid text overlapping (slow if many points)
+fviz_ca_biplot(res.ca, repel = TRUE)
+```
+
+Use the function fviz_ca_row() [in factoextra] to visualize only row points:
+
+```{r}
+
+fviz_ca_row(res.ca, repel = TRUE)
+
+```
+
+```{r}
+# Color by cos2 values: quality on the factor map
+fviz_ca_row(res.ca, col.row = "cos2",
+             gradient.cols = c("#00AFBB", "#E7B800", "#FC4E07"), 
+             repel = TRUE)
+```
+
+```{r}
+library("corrplot")
+
+row <- get_ca_row(res.ca)
+row
+corrplot(row$cos2, is.corr=FALSE)
+
+
+corrplot(row$cos2, is.cor = FALSE, tl.cex = .7, method = "color")
+
+```
+
+```{r}
+# Cos2 of rows on Dim.1 and Dim.2
+fviz_cos2(res.ca, choice = "row", axes = 1:2)
+```
+It’s also possible to create a bar plot of rows cos2 using the function fviz_cos2().
+
+```{r}
+col <- get_ca_col(res.ca)
+col
+
+fviz_ca_col(res.ca, col.col = "cos2", 
+             gradient.cols = c("#00AFBB", "#E7B800", "#FC4E07"),
+             repel = TRUE)
+```
+```{r}
+fviz_contrib(res.ca, choice = "col", axes = 1:2)
+```
+
+The R code below draws a standard asymmetric biplot:
+
+```{r}
+fviz_ca_biplot(res.ca, 
+               map ="rowprincipal", arrow = c(TRUE, TRUE),
+               repel = TRUE)
+```
+
+
+```{r}
+fviz_ca_biplot(res.ca, map ="colgreen", arrow = c(TRUE, FALSE),
+               repel = TRUE)
+```
+
+## Exercise
+
+Exercise on food data!!!!
+
+```{r}
+food <- read.csv("https://userpage.fu-berlin.de/soga/data/raw-data/food-texture.csv",
+                 row.names = "X")
+```
+
+
+## ###################################
+## DISCRIMINANT ANALYSIS (I think is tomorrow)
+## ###################################
+
+
+```{r, echo=TRUE}
+# Libraries needed
+library(car)
+library(psych)
+library(reshape2)
+library(klaR)
+library(psych)
+library(MASS)
+library(devtools)
+
+# Enable the r-universe repo
+options(repos = c(
+    fawda123 = 'https://fawda123.r-universe.dev',
+    CRAN = 'https://cloud.r-project.org'))
+
+# Install ggord
+#install.packages('ggord')
+library(ggord)
+```
+
+
+```{r}
+
+iris <- read.csv("C:\\Users\\cgranadamunoz\\OneDrive - Universiteit Antwerpen\\Codes_UA\\multivariate_statistics\\data\\iris.txt", stringsAsFactors=TRUE)
+head(iris)
+
+scatterplotMatrix(iris[1:4])
+
+pairs.panels(iris[1:4],
+             gap = 0,
+             bg = c("red", "green", "blue")[iris$Species],
+             pch = 21)
+
+```
+
+```{r}
+#Data here is rotated and easy to analyse.
+#Long format is prefered.
+iris.long <- melt(iris, id.vars = "Species", measure.vars = 1:4)
+
+```
+## PCA? 
+
+```{r, echo = TRUE}
+
+iris$Sepal.Length <- as.numeric(iris$Sepal.Length)
+iris$Sepal.Width <- as.numeric(iris$Sepal.Width)
+iris$Petal.Length <- as.numeric(iris$Petal.Length)
+iris$Petal.Width <- as.numeric(iris$Petal.Width)
+standardisedconcentrations <- as.data.frame(scale(iris[1:4])) # standardise the variables
+iris.pca <- prcomp(standardisedconcentrations)                 # do a PCA
+summary(iris.pca)
+
+biplot(iris.pca)
+screeplot(iris.pca, type="lines")
+
+```
+
+
+
+## Data partition
+
+Let’s create a training dataset and test dataset for prediction and testing purposes. 60% dataset used for training purposes and 40$ used for testing purposes.
+
+```{r}
+
+set.seed(123)
+ind <- sample(2, nrow(iris),
+              replace = TRUE,
+              prob = c(0.6, 0.4))
+training <- iris[ind==1,]
+testing <- iris[ind==2,]
+
+```
+
+## Linear discriminant analysis
+
+```{r}
+
+linear <- lda(Species ~ ., training)
+linear
+```
+
+## Decision Trees in R
+
+The first discriminant function is a linear combination of the four variables.
+
+Percentage separations achieved by the first discriminant function is 99.37% (sum of all coeficients of linear discriminants) and second is 0.63%
+
+```{r}
+attributes(linear)
+```
+
+##Histogram
+
+Stacked histogram for discriminant function values.
+
+```{r}
+p <- predict(linear, training)
+ldahist(data = p$x[,1], g = training$Species)
+
+ldahist(data = p$x[,2], g = training$Species)
+```
+
+## Bi-Plot
+
+```{r}
+
+ggord(linear, training$Species, ylim = c(-5, 5))
+
+```
+
+
+Biplot based on LD1  and LD2. Setosa separated very clearly and some overlap observed between Versicolor and virginica.
+
+Based on arrows, Sepal width and sepal length explained more for setosa, petal width and petal length explained more for versicolor and virginica.
+
+
+## Partition plot
+
+It provides the classification of each and every combination in the training dataset.
+
+## Confusion matrix and accuracy – training data
+
+```{r}
+
+partimat(Species~., data = training, method = "lda")
+#partimat(Species~., data = training, method = "qda")
+
+# training data predictions
+p1 <- predict(linear, training)$class
+tab <- table(Predicted = p1, Actual = training$Species)
+tab
+
+# testing data predictions
+
+p2 <- predict(linear, testing)$class
+tab1 <- table(Predicted = p2, Actual = testing$Species)
+tab1
+
+```
+Histogram and Biplot provide useful insights and helpful for interpretations and if there is not a great difference in the group covariance matrices, then the linear discriminant analysis will perform as well as quadratic. LDA is not useful for solving non-linear problems.
+
+
+## Hierarchical clustering
+
+```{r}
+
+clusters <- hclust(dist(iris[, 3:4]))
+plot(clusters)
+
+clusterCut <- cutree(clusters, 3)
+```
+
+To do this, we can cut off the tree at the desired number of clusters using cutree.
+
+```{r}
+# to check 3 or 4 clusters are better
+clusterCut <- cutree(clusters, 3)
+table(clusterCut, iris$Species)
+
+clusterCut <- cutree(clusters, 4)
+table(clusterCut, iris$Species)
+
+```
+We can see that this time, the algorithm did a much better job of clustering the data, only going wrong with 6 of the data points.
+
+We can plot it as follows to compare it with the original data:
+
+```{r}
+ install.packages('ggplot2')
+library(ggplot2)
+
+ggplot(iris, aes(Petal.Length, Petal.Width, color = Species)) + 
+  geom_point(alpha = 0.4, size = 3.5) + geom_point(col = clusterCut) + 
+  scale_color_manual(values = c('black', 'red', 'green'))
+
+
+#ggplot(iris, aes(Petal.Length, Petal.Width, color = Species)) + 
+#   geom_point(alpha = 0.4, size = 3.5) + 
+#   scale_color_manual(values = c('black', 'red', 'green'))
+
+```
+All the points where the inner color doesn’t match the outer color are the ones which were clustered incorrectly.
+
+
+## K-means clustering
+
+The most common partitioning method is the K-means cluster analysis. Conceptually, the K-means algorithm:
+
+Selects K centroids (K rows chosen at random)
+Assigns each data point to its closest centroid
+Recalculates the centroids as the average of all data points in a cluster (i.e., the centroids are p-length mean vectors, where p is the number of variables)
+Assigns data points to their closest centroids
+Continues steps 3 and 4 until the observations are not reassigned or the maximum number of iterations (R uses 10 as a default) is reached.
+
+K-means clustering can handle larger datasets than hierarchical cluster approaches. Additionally, observations are not permanently committed to a cluster. They are moved when doing so improves the overall solution. However, the use of means implies that all variables must be continuous and the approach can be severely affected by outliers. They also perform poorly in the presence of non-convex (e.g., U-shaped) clusters.
+
+The format of the K-means function in R is kmeans(x, centers) where x is a numeric dataset (matrix or data frame) and centers is the number of clusters to extract. The function returns the cluster memberships, centroids, sums of squares (within, between, total), and cluster sizes.
+
+Since K-means cluster analysis starts with k randomly chosen centroids, a different solution can be obtained each time the function is invoked. Use the set.seed() function to guarantee that the results are reproducible. Additionally, this clustering approach can be sensitive to the initial selection of centroids. The kmeans() function has an nstart option that attempts multiple initial configurations and reports on the best one. For example, adding nstart=25 will generate 25 initial configurations. This approach is often recommended.
+
+Unlike hierarchical clustering, K-means clustering requires that the number of clusters to extract be specified in advance. Again, the NbClust package can be used as a guide. Additionally, a plot of the total within-groups sums of squares against the number of clusters in a K-means solution can be helpful. A bend in the graph can suggest the appropriate number of clusters. The graph can be produced by the following function.
+
+```{r}
+# function
+wssplot <- function(data, nc=15, seed=1234){
+               wss <- (nrow(data)-1)*sum(apply(data,2,var))
+               for (i in 2:nc){
+                    set.seed(seed)
+                    wss[i] <- sum(kmeans(data, centers=i)$withinss)}
+                plot(1:nc, wss, type="b", xlab="Number of Clusters",
+                     ylab="Within groups sum of squares")}
+```
+
+The data parameter is the numeric dataset to be analyzed, nc is the maximum number of clusters to consider, and seed is a random number seed.
+
+
+```{r}
+
+wssplot(iris[,1:4])   
+
+# The D index is a graphical method of determining the number of clusters.
+
+library(NbClust)
+set.seed(1234)
+nc <- NbClust(iris[,1:4], min.nc=2, max.nc=15, method="kmeans")
+table(nc$Best.n[1,])
+
+```
+
+When the suggestion is to choose 2 or 3 clusters, we run both and explore the output. 
+We will run k-means with cluster number 3. 
+
+```{r}
+
+set.seed(1234)
+fit.km <- kmeans(iris[,1:4], 3, nstart=25)                          
+# Print the results
+print(fit.km)
+
+# other info you can check
+fit.km$size
+fit.km$centers                                              
+
+#aggregate(iris, by=list(cluster=fit.km$cluster), mean)
+
+```
+Since the variables vary in range, they are standardized prior to clustering (#1). Next, the number of clusters is determined using the wwsplot() and NbClust()functions (#2). 
+
+A final cluster solution is obtained with kmeans() function and the cluster centroids are printed (#3). Since the centroids provided by the function are based on standardized data, the aggregate() function is used along with the cluster memberships to determine variable means for each cluster in the original metric.
+
+
+So how well did the K-means clustering uncover the actual structure of the data contained in the Type variable? A cross-tabulation of Type (flower varietal) and cluster membership is given by
+
+```{r}
+ct.km <- table(iris$Species, fit.km$cluster)
+ct.km 
+
+library(factoextra)
+fviz_cluster(fit.km, data = iris[, -5],
+             palette = c("#2E9FDF", "#00AFBB", "#E7B800"), 
+             geom = "point",
+             ellipse.type = "convex", 
+             ggtheme = theme_bw()
+             )
+```
+We can quantify the agreement between type and cluster, using an adjusted Rank index provided by the flexclust package.
+```{r}
+fviz_cluster(fit.km, iris[-5], ellipse.type = "norm", outlier.color = "yellow", geom ="text", show.clust.cent = TRUE)
+```
+
+ 
+```{r}
+library(flexclust)
+randIndex(ct.km)
+```
+The adjusted Rand index provides a measure of the agreement between two partitions, adjusted for chance. It ranges from -1 (no agreement) to 1 (perfect agreement). Agreement between the iris varietal type and the cluster solution is 0.9. 
+
+## Extra
+If you want to adapt the k-means clustering plot, you can follow the steps below:
+
+Compute principal component analysis (PCA) to reduce the data into small dimensions for visualization
+Use the ggscatter() R function [in ggpubr] or ggplot2 function to visualize the clusters
+
+```{r}
+# Dimension reduction using PCA
+res.pca <- prcomp(iris[, -5],  scale = TRUE)
+# Coordinates of individuals
+ind.coord <- as.data.frame(get_pca_ind(res.pca)$coord)
+# Add clusters obtained using the K-means algorithm
+ind.coord$cluster <- factor(fit.km$cluster)
+# Add Species groups from the original data sett
+ind.coord$Species <- iris$Species
+# Data inspection
+head(ind.coord)
+
+# Percentage of variance explained by dimensions
+eigenvalue <- round(get_eigenvalue(res.pca), 1)
+variance.percent <- eigenvalue$variance.percent
+head(eigenvalue)
+
+library(ggpubr)
+# vizualile k-means with centroids
+ggscatter(
+  ind.coord, x = "Dim.1", y = "Dim.2", 
+  color = "cluster", palette = "npg", ellipse = TRUE, ellipse.type = "convex",
+  shape = "Species", size = 1.5,  legend = "right", ggtheme = theme_bw(),
+  xlab = paste0("Dim 1 (", variance.percent[1], "% )" ),
+  ylab = paste0("Dim 2 (", variance.percent[2], "% )" )
+) +
+  stat_mean(aes(color = cluster), size = 4)
+
+```
+
+
+
+
+Reference:
+https://www.clres.com/ca/pdepca01a.html#r-code-to-compute-ca
+

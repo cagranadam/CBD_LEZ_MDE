@@ -34,7 +34,8 @@ raw_path
 ```{r}
 # 1. Read sheet as-is (captures all 66 columns)
 raw <- read_excel(path = raw_path, sheet = 1)
-
+dim(raw)
+names(raw)
 # 2. Define your full 66-row dictionary
 library(tibble)
 data_dict <- tribble(
@@ -77,9 +78,9 @@ data_dict <- tribble(
                                                                                                                  "Loading/Unloading Time Windows",                           "multi_nominal",         "text",
   "Por favor, indique la forma en la que ingresa la mercancía a su comercio o área de bodega:",                   "Loading Method",                                            "multi_nominal",         "text",
   "En una escala de 1 a 5, donde 1 es \"Muy inseguro\" y 5 \"Muy seguro\", ¿considera usted que el proceso de cargue y descargue de mercancías en camión, carro o motocicleta es?", 
-                                                                                                                 "Safety Perception: Truck Loading (1–5)",                  "ordinal_scale",         "numeric",
+                                                                                                                 "Safety_Truck",                  "ordinal_scale",         "numeric",
   "En una escala de 1 a 5, donde 1 es \"Muy inseguro\" y 5 \"Muy seguro\", ¿considera usted que el proceso de cargue y descargue de mercancías en bicicleta es?", 
-                                                                                                                 "Safety Perception: Bike Loading (1–5)",                   "ordinal_scale",         "numeric",
+                                                                                                                 "Safety_Bike",                   "ordinal_scale",         "numeric",
   "¿El establecimiento o bodega posee alguno de los siguientes elementos para el cargue y descargue de mercancías?", 
                                                                                                                  "Loading Equipment Owned",                                   "multi_nominal",         "text",
   "¿Qué medio realiza para el envío de sus artículos a domicilio?",                                              "Home Delivery Vehicle",                                    "nominal",               "text",
@@ -125,6 +126,7 @@ nrow(data_dict)  # should be 66
 
 # 3. Overwrite raw names and drop any extras
 raw <- raw %>% set_names(data_dict$col_name)
+names(raw)
 ```
 # Descriptive analysis
 ```{r}

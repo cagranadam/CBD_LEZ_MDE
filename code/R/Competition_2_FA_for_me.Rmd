@@ -1,0 +1,304 @@
+---
+title: "Competition II Day 3"
+author: "Roma Siugzdaite"
+date: "2025-05-07"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Competition II. Factor analysis
+
+This dataset is about Student Habits vs Academic Performance
+
+This is a simulated dataset exploring how lifestyle habits affect academic performance in students. With 1,000 synthetic student records and 15+ features including study hours, sleep patterns, social media usage, diet quality, mental health, and final exam scores, it’s perfect for ML projects, regression analysis, clustering, and data viz. Created using realistic patterns for educational practice.
+
+Ever wondered how much Netflix, sleep, or TikTok scrolling affects your grades? 👀 This dataset simulates 1,000 students' daily habits—from study time to mental health—and compares them to final exam scores. It's like spying on your GPA through the lens of lifestyle. 
+
+student_habits_performance.csv
+
+#Research question: How many groups I can see in these data? 
+
+
+```{r, echo=TRUE }
+
+library(readr)
+pairfam <- read_csv("C:\\Users\\cgranadamunoz\\OneDrive - Universiteit Antwerpen\\Codes_UA\\multivariate_statistics\\pairfam_synth_data.csv")
+head(pairfam)
+
+```
+
+## Descriptive statistics
+
+```{r, echo=TRUE }
+
+# select only numerical variables
+data <- pairfam[, c(3, 5:13)]
+summary(data)
+
+data <- as.data.frame(data)
+
+#Check missing values
+#Where is this Na's are? use this function
+colSums(is.na(data))
+missings <- colSums(is.na(data))
+summary(missings)
+
+```
+
+## Normality testing
+
+```{r, echo=TRUE }
+
+# I create a function to make a figure of a certain size
+fig <- function(width,heigth){
+    options(repr.plot.width = width, repr.plot.height = heigth)
+}
+
+# show all histograms in one figure
+
+fig(25,25)
+par(mfrow=c(2,5)) # 2x4 grid for variable visualization
+for (i in seq(1,ncol(data))){
+    hist(data[,i],main = '',xlab = colnames(data)[i])
+}
+
+
+```
+
+What correlations tell you??? 
+There two main factors 
+
+```{r, echo=TRUE}
+
+library(car)
+fig(25,25)
+
+par(mfrow = c(2,5))
+for (i in seq(1,ncol(data))){
+    qqPlot(as.numeric(data[,i]),ylab=colnames(data)[i])
+}
+```
+
+## Shapiro test for normality
+
+Shapiro Test
+H0 = Normal Distribution
+H1 = Not normal distribution
+
+We can create a table of all results and keep the test values.
+
+```{r}
+normal_uni_test <- data.frame(matrix(0,ncol(data),3))
+rownames(normal_uni_test) <- colnames(data)
+colnames(normal_uni_test) <- c('Statistic','p-value','Normal')
+
+alpha <- 0.05
+for (i in seq(1,ncol(data))){
+    normal_uni_test[i,1] <- shapiro.test(as.numeric(data[,i]))$statistic
+    normal_uni_test[i,2] <- shapiro.test(as.numeric(data[,i]))$p.value
+    if (normal_uni_test[i,2] < alpha){
+        normal_uni_test[i,3] <- 'NO'
+    } else{
+        normal_uni_test[i,3] <- 'YES'
+    }
+}
+
+
+#write.csv(normal_uni_test, file = 'univariate_normal_test.csv')
+View(normal_uni_test)
+```
+
+## Correlation
+
+
+```{r}
+
+# calculate and plot correlations
+library(RcmdrMisc)
+library(psych)
+r <- rcorr.adjust(data, type = "pearson", use = "complete.obs")
+corPlot(r$R$r, numbers = TRUE, stars = TRUE, diag = FALSE)
+
+#other method
+library(ggplot2)
+library(corrplot)
+
+fig(20,20)
+r <- cor(data, method = "spearman")
+corrplot(r, type = 'upper', method = 'square')
+
+
+# png(filename = 'corrplot.png',bg = 'transparent',width = 2000,height = 2000,pointsize = 30)
+# corrplot(cor(df),type = 'upper',method = 'ellipse')
+# dev.off()
+
+```
+## Clean data
+```{r}
+library(RcmdrMisc)
+
+data2 <- na.omit(data)
+
+r <- rcorr.adjust(data2, type = "pearson", use = "complete.obs")
+corPlot(r$R$r, numbers = TRUE, stars = TRUE, diag = FALSE)
+
+# you can use also a new library, example here
+library(ggplot2)
+library(corrplot)
+r <- cor(data2, method = "spearman")
+corrplot(r, method = 'square')
+
+```
+## Bartlet test
+
+```{r}
+summary(data2)
+library(psych)
+# Bartlet's test of Sphericity
+cortest.bartlett(data2)
+bart.test <- cortest.bartlett(r, n = nrow(data2))
+bart.test$p.value # extract p-value
+```
+
+Bartlet test has to be significant < 0.05 
+
+## Scree plot
+
+```{r}
+fa.parallel(data2,fm='fa',ylabel='Eigenvalues')
+
+```
+## Factor analysis
+
+The way we learned in the class
+
+
+```{r}
+
+Nfacs <- 4 # This is for four factors. You can change this as needed.
+
+library(stats)
+fit <- factanal(data2, Nfacs, rotation="varimax", correlation= TRUE) #We need to put correlation TRUE if we want to use correlation. 
+
+print(fit, digits=2, cutoff=0.3, sort=TRUE)
+```
+
+Reporting: There are 2 factors explaining 30% of total variance. With first factor explaining 20% and second factor 10% of variance. Factor one eigenvalue is 1.79 and factor two eigenvalue is 0.89.
+
+
+```{r}
+
+library(psych)
+KMO(data2)
+
+```
+
+KMO has to be more than 0.6 for factor analysis. We have 0.17. :( Indicating data are not clustered inside the dataset.
+
+
+```{r}
+
+factor_analysis <- fa(data,nfactors=4,fm='ml',rotate='varimax',max.iter=100)
+factor_analysis
+
+```
+
+
+```{r}
+
+# Name your latent factors. if you have two factors - your have t give to names. If you have 3 factors, you have to give 3 names, and ect.
+colnames(factor_analysis$loadings) <- c('m_health','Internet_use', 'Satsfaction','Depresion')
+fig(20,20)
+fa.diagram(factor_analysis,rsize = 0.5,cex=0.01)
+```
+
+Your interpretation about the data? 
+
+```{r}
+#data2 <- data[,c(2,3, 7:9)]
+factor_analysis <- fa(data2,nfactors=4,fm='ml',rotate='varimax',max.iter=100)
+factor_analysis
+```
+
+```{r}
+colnames(factor_analysis$loadings) <- c('Studying', 'Environment')
+fig(20,20)
+fa.diagram(factor_analysis,rsize = 0.5,cex=0.01)
+```
+
+## Report to th paper results
+
+## New example
+
+```{r}
+library(readr)
+data <- read_csv("/Users/rsiugzdaite/Downloads/pairfam_synth_data.csv")
+head(data)
+```
+```{r}
+Data <- data[,c(3, 5:13)]
+Data <- data.frame(Data)
+par(mfrow=c(2,5)) # 2x4 grid for variable visualization
+for (i in seq(1,ncol(Data))){
+    hist(Data[,i],main = '',xlab = colnames(Data)[i])
+}
+
+```
+
+
+```{r}
+
+library(ggplot2)
+library(corrplot)
+
+r <- cor(Data, use = 'pairwise.complete.obs')
+corrplot(r, method = 'square')
+
+```
+
+
+```{r}
+fa.parallel(Data,fm='fa',ylabel='Eigenvalues')
+```
+
+```{r}
+
+DataClean <- na.omit(Data)
+
+
+library(psych)
+KMO(DataClean)
+DataClean2 <- DataClean[, KMO(DataClean)$MSAi > 0.49] # Get rid of all variables with MSA < 0.50
+
+Nfacs <- 4 # This is for four factors. You can change this as needed.
+
+library(stats)
+fit <- factanal(DataClean2, Nfacs, rotation="varimax")
+
+print(fit, digits=2, cutoff=0.3, sort=TRUE)
+
+KMO(DataClean2)
+```
+
+
+```{r}
+# number of loadings is the number of factors
+load <- fit$loadings[,1:Nfacs]
+load
+plot(load,type="p") # set up plot
+text(load,labels=names(DataClean2),cex=.7)
+```
+
+
+```{r}
+library(psych)
+
+loads <- fit$loadings
+loads
+fa.diagram(loads)
+
+```
+## Your interpretation? 

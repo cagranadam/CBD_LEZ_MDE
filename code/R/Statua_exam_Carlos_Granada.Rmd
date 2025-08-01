@@ -1,0 +1,158 @@
+---
+title: "Statua_exam"
+author: "cagranadam"
+date: "2025-06-09"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Multivariate statistics with R exam
+
+Carlos Granada Munoz ([carlosgranadamunoz@uantwerpen.be](mailto:carlosgranadamunoz@uantwerpen.be))
+
+The dataset “Math Anxiety” contains responses on participants’ math anxiety, confidence, avoidance, support, stress, performance, and demographics.
+
+## Preliminary Steps
+
+```{r prelim}
+# Load and inspect data
+Math_anx <- read.csv("C:/Users/cgranadamunoz/OneDrive - Universiteit Antwerpen/Codes_UA/multivariate_statistics/data/MathAnxiety.csv")
+summary(Math_anx)
+colSums(is.na(Math_anx))
+
+# Clean and subset
+data <- na.omit(Math_anx)
+data2 <- data[, c(2,4:12)] #numerical data
+```
+
+# Hypothesis 1: Relationships among Anxiety, Confidence, Study Hours, Parental Support & Performance
+
+### Methods
+
+```{r}
+library(RcmdrMisc)
+library(psych)
+# Spearman correlation
+r_spear <- rcorr.adjust(data2, type="spearman", use="complete.obs")
+# Factor Analysis
+fit1 <- factanal(data2, factors=2, rotation="varimax")
+# PCA
+data.pca <- prcomp(scale(data2), center=TRUE, scale.=TRUE)
+```
+
+### Results
+
+```{r h1-results, echo=FALSE}
+corPlot(r_spear$R$r, numbers=TRUE, stars=TRUE)
+print(fit1, digits=2, cutoff=0.3)
+summary(data.pca)
+screeplot(data.pca, type="lines")
+```
+
+### Interpretation
+
+The Spearman correlations (ρ from –0.92 to +0.96) and the first FA factor (42% variance) align on a “Success vs Distress” dimension, fully supporting H1.
+
+# Hypothesis 2: Anxiety → Avoidance & Stress
+
+### Methods
+
+```{r h2-methods}
+# Spearman correlations for avoidance and stress
+print(r_spear$R$r["Math.Anxiety.Score","Math.Avoidance.Behavior..1.10."])
+print(r_spear$R$r["Math.Anxiety.Score","Math.Related.Stress..1.10."])
+```
+
+### Results
+
+```{r h2-results, echo=FALSE}
+# Factor loadings second factor
+loadings(fit1)[,2]
+```
+
+### Interpretation
+
+Both correlations (ρ ≈ +0.97) and FA factor 2 (37% variance) confirm tight linkage of anxiety, avoidance, and stress.
+
+# Hypothesis 3: Teacher & Social Support → Anxiety
+
+### Methods
+
+```{r h3-methods}
+# Spearman correlations for supports
+print(r_spear$R$r["Teacher.Support..1.10.","Math.Anxiety.Score"])
+print(r_spear$R$r["Social.Support..1.10.","Math.Anxiety.Score"])
+```
+
+### Results
+
+```{r h3-results, echo=FALSE}
+# FA loadings on supports and anxiety
+loadings(fit1)[c("Teacher.Support..1.10.","Social.Support..1.10.","Math.Anxiety.Score"),]
+```
+
+### Interpretation
+
+Teacher support correlates negatively with anxiety (ρ ≈ –0.76), confirming H3 for teacher support. Social support shows ρ ≈ +0.58, contradicting H3 unless scale is reversed.
+
+# Hypothesis 4: Gender Differences in Anxiety, Confidence & Stress
+
+### Methods
+
+```{r h4-methods}
+# Create categorical levels
+data$Gender <- factor(data$Gender, levels=c("Male","Female","Other"))
+data$AnxietyLevel <- cut(data$Math.Anxiety.Score, breaks=c(0,4,7,10), labels=c("Low","Medium","High"))
+data$ConfidenceLevel <- cut(data$Confidence.in.Math..1.10., breaks=c(0,4,7,10), labels=c("Low","Medium","High"))
+data$StressLevel <- cut(data$Math.Related.Stress..1.10., breaks=c(0,4,7,10), labels=c("Low","Medium","High"))
+# Contingency tables
+anx_tab <- table(data$Gender, data$AnxietyLevel)
+conf_tab <- table(data$Gender, data$ConfidenceLevel)
+stress_tab <- table(data$Gender, data$StressLevel)
+# Tests
+chi_anx <- chisq.test(anx_tab)
+chi_conf <- chisq.test(conf_tab)
+chi_stress <- chisq.test(stress_tab)
+```
+
+### Results
+
+```{r h4-results, echo=FALSE}
+print(chi_anx)
+print(chi_conf)
+print(chi_stress)
+res.ca_anx <- CA(anx_tab, graph=FALSE); print(get_eigenvalue(res.ca_anx))
+fviz_ca_biplot(res.ca_anx)
+```
+
+### Interpretation
+
+All χ² tests p > .05 and CA biplots show no clear separation by gender, so H4 is not supported.
+
+# Hypothesis 5: Clustering of Student Profiles
+
+### Methods
+
+```{r h5-methods}
+# Standardize and cluster
+cluster_data <- scale(data[,c("Math.Anxiety.Score","Confidence.in.Math..1.10.","Math.Related.Stress..1.10.")])
+# Hierarchical
+hc <- hclust(dist(cluster_data), method="ward.D2")
+# K-means
+set.seed(1234); fit.km <- kmeans(cluster_data, centers=3, nstart=25)
+```
+
+### Results
+
+```{r h5-results, echo=FALSE}
+plot(hc)
+print(fit.km$size); print(fit.km$centers)
+fviz_cluster(fit.km, data=cluster_data)
+```
+
+### Interpretation
+
+Three clusters—high-distress/low-confidence, balanced, low-distress/high-confidence—emerge clearly, confirming H5.
