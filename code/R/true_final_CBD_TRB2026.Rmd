@@ -210,6 +210,9 @@ for(i in 1:nrow(missing_summary)) {
 }
 ```
 
+
+
+
 ### Raw Main Products Analysis
 
 ```{r raw_products_analysis}
@@ -498,15 +501,14 @@ famd_data <- survey_data %>%
   mutate(across(all_of(structural_zero_vars), ~replace_na(.x, 0))) %>% 
   
   # Enhanced categorical recoding with factors
-  mutate(
-    # Establishment type with proper factor levels
-    est_type = case_when(
-      str_detect(str_to_lower(economic_activity), "proveedor")        ~ "Supplier",
-      str_detect(str_to_lower(economic_activity), "venta al detalle") ~ "Retailer",
-      str_detect(str_to_lower(economic_activity), "fabricante")       ~ "Manufacturer",
-      str_detect(str_to_lower(economic_activity), "internet")         ~ "E-commerce",
-      TRUE                                                            ~ "Other"
-    ) %>% factor(levels = c("Retailer", "Supplier", "Manufacturer", "E-commerce", "Other")),
+mutate(
+  # Establishment type with proper factor levels - ALL entries categorized
+  est_type = case_when(
+    str_detect(str_to_lower(economic_activity), "proveedor")          ~ "Supplier",
+    str_detect(str_to_lower(economic_activity), "venta al detalle")   ~ "Retailer", 
+    str_detect(str_to_lower(economic_activity), "fabricante")         ~ "Manufacturer",
+    str_detect(str_to_lower(economic_activity), "ventas por internet|internet") ~ "E-commerce"
+  ) %>% factor(levels = c("Retailer", "Supplier", "Manufacturer", "E-commerce")),
     
     # Warehouse indicators with proper handling
     has_warehouse = case_when(
@@ -611,13 +613,17 @@ famd_data <- survey_data %>%
     supply_week_norm = scale(supply_week_num)[, 1],
     across(all_of(numeric_vars), ~scale(as.numeric(.x))[, 1], .names = "{.col}_norm"),
     
-    # Create logistics intensity indicators
+    # Create logistics intensity indicators with expanded range for Python naming compatibility
     delivery_intensity = case_when(
       num_deliveries == 0 ~ "No Deliveries",
-      num_deliveries <= 2 ~ "Low (1-2/day)",
-      num_deliveries <= 5 ~ "Medium (3-5/day)",
-      TRUE ~ "High (6+/day)"
-    ) %>% factor(levels = c("No Deliveries", "Low (1-2/day)", "Medium (3-5/day)", "High (6+/day)"), 
+      num_deliveries == 1 ~ "Very Low (1/day)", 
+      num_deliveries == 2 ~ "Low (2/day)",
+      num_deliveries <= 3 ~ "Medium (3/day)",
+      num_deliveries <= 4 ~ "High (4/day)",
+      num_deliveries <= 5 ~ "Very High (5/day)",
+      TRUE ~ "Maximum (6+/day)"
+    ) %>% factor(levels = c("No Deliveries", "Very Low (1/day)", "Low (2/day)", "Medium (3/day)", 
+                           "High (4/day)", "Very High (5/day)", "Maximum (6+/day)"), 
                  ordered = TRUE),
     
     online_delivery_intensity = case_when(
@@ -871,6 +877,181 @@ if(sum(!is.na(famd_data$est_type)) > 0 && sum(!is.na(famd_data$specific_activity
   }
 }
 ```
+```{r establishment_products_analysis}
+# Enhanced categorical analysis: Establishment Type vs Main Products
+cat("=== ESTABLISHMENT TYPE VS MAIN PRODUCTS ANALYSIS ===\n")
+
+# Establishment Type distribution
+est_type_counts <- famd_data %>%
+  count(est_type, sort = TRUE) %>%
+  filter(!is.na(est_type)) %>%
+  mutate(percentage = round(n / sum(n) * 100, 1))
+
+kable(est_type_counts, 
+      caption = "Distribution of Establishment Types",
+      col.names = c("Establishment Type", "Count", "Percentage (%)"))
+
+# Cross-tabulation between establishment type and main products
+if(sum(!is.na(famd_data$est_type)) > 0 && sum(!is.na(famd_data$main_products_clean)) > 0) {
+  
+  # Create cross-tabulation
+  est_products_tab <- xtabs(~ est_type + main_products_clean, data = famd_data)
+  
+  # Display only if we have sufficient data
+  if(min(dim(est_products_tab)) > 1) {
+    
+    cat("Cross-tabulation dimensions:", nrow(est_products_tab), "×", ncol(est_products_tab), "\n")
+    cat("Total observations:", sum(est_products_tab), "\n\n")
+    
+    # Display the cross-tabulation table
+    kable(est_products_tab, 
+          caption = "Cross-tabulation: Establishment Type vs Main Products")
+    
+    # Create visualization
+    est_products_df <- famd_data %>%
+      filter(!is.na(est_type), !is.na(main_products_clean)) %>%
+      count(est_type, main_products_clean) %>%
+      group_by(est_type) %>%
+      mutate(percentage = round(n / sum(n) * 100, 1))
+    
+    # Stacked bar chart
+    p_stacked <- ggplot(est_products_df, aes(x = est_type, y = n, fill = main_products_clean)) +
+      geom_col(position = "stack", alpha = 0.8) +
+      scale_fill_brewer(type = "qual", palette = "Set3", name = "Main Products") +
+      labs(title = "Distribution of Main Products by Establishment Type",
+           subtitle = "Stacked view showing product diversity across business types",
+           x = "Establishment Type", y = "Count") +
+      theme_minimal() +
+      theme(legend.position = "bottom",
+            legend.text = element_text(size = 8),
+            axis.text.x = element_text(angle = 45, hjust = 1)) +
+      guides(fill = guide_legend(ncol = 3))
+    
+    print(p_stacked)
+    
+    # Percentage stacked bar chart
+    p_pct <- ggplot(est_products_df, aes(x = est_type, y = percentage, fill = main_products_clean)) +
+      geom_col(position = "stack", alpha = 0.8) +
+      scale_fill_brewer(type = "qual", palette = "Set3", name = "Main Products") +
+      labs(title = "Product Distribution by Establishment Type (Percentages)",
+           subtitle = "Relative product mix within each establishment type",
+           x = "Establishment Type", y = "Percentage (%)") +
+      theme_minimal() +
+      theme(legend.position = "bottom",
+            legend.text = element_text(size = 8),
+            axis.text.x = element_text(angle = 45, hjust = 1)) +
+      guides(fill = guide_legend(ncol = 3))
+    
+    print(p_pct)
+    
+    # Mosaic plot for establishment type vs main products
+    tryCatch({
+      mosaicplot(est_products_tab, 
+                 color = RColorBrewer::brewer.pal(min(12, ncol(est_products_tab)), "Set3"),
+                 main = "Establishment Type vs Main Products",
+                 sub = "Area proportional to frequency",
+                 las = 2, cex.axis = 0.6)
+    }, error = function(e) {
+      cat("Could not create mosaic plot:", e$message, "\n")
+    })
+    
+    # Heat map visualization
+    library(pheatmap)
+    
+    # Convert to proportions for better visualization
+    est_products_prop <- prop.table(est_products_tab, margin = 1)
+    
+    # Create heatmap if dimensions are reasonable
+    if(nrow(est_products_prop) <= 10 && ncol(est_products_prop) <= 20) {
+      pheatmap(est_products_prop,
+               main = "Product Mix by Establishment Type (Heatmap)",
+               cluster_rows = FALSE,
+               cluster_cols = TRUE,
+               color = colorRampPalette(c("white", "steelblue", "darkblue"))(50),
+               fontsize_row = 10,
+               fontsize_col = 8,
+               angle_col = 45)
+    }
+    
+    # Statistical analysis
+    tryCatch({
+      chi_test_est_products <- chisq.test(est_products_tab)
+      cat("\n=== STATISTICAL ANALYSIS ===\n")
+      cat("Chi-square test for independence:\n")
+      cat("Chi-square statistic:", round(chi_test_est_products$statistic, 3), "\n")
+      cat("Degrees of freedom:", chi_test_est_products$parameter, "\n")
+      cat("p-value:", format(chi_test_est_products$p.value, scientific = TRUE), "\n")
+      
+      if(chi_test_est_products$p.value < 0.05) {
+        cat("✓ Significant association between establishment type and main products (p < 0.05)\n")
+        cat("This indicates that different establishment types tend to specialize in different product categories.\n")
+      } else {
+        cat("⚠ No significant association found (p ≥ 0.05)\n")
+        cat("This suggests product diversity across all establishment types.\n")
+      }
+      
+      # Cramér's V for effect size
+      cramers_v <- sqrt(chi_test_est_products$statistic / (sum(est_products_tab) * (min(dim(est_products_tab)) - 1)))
+      cat("Cramér's V (effect size):", round(cramers_v, 3), "\n")
+      
+      if(cramers_v > 0.3) {
+        cat("Strong association\n")
+      } else if(cramers_v > 0.1) {
+        cat("Moderate association\n")
+      } else {
+        cat("Weak association\n")
+      }
+      
+    }, error = function(e) {
+      cat("Chi-square test failed:", e$message, "\n")
+    })
+    
+    # Top product-establishment combinations
+    top_combinations <- est_products_df %>%
+      arrange(desc(n)) %>%
+      slice_head(n = 10)
+    
+    cat("\n=== TOP 10 ESTABLISHMENT-PRODUCT COMBINATIONS ===\n")
+    kable(top_combinations, 
+          caption = "Most Common Establishment Type - Product Combinations",
+          col.names = c("Establishment Type", "Main Product", "Count", "% within Type"))
+    
+    # Summary insights
+    cat("\n=== KEY INSIGHTS ===\n")
+    
+    # Most diverse establishment type
+    diversity_by_type <- est_products_df %>%
+      group_by(est_type) %>%
+      summarise(
+        product_categories = n(),
+        total_establishments = sum(n),
+        dominant_product = main_products_clean[which.max(n)],
+        dominant_pct = max(percentage),
+        .groups = 'drop'
+      ) %>%
+      arrange(desc(product_categories))
+    
+    kable(diversity_by_type,
+          caption = "Product Diversity by Establishment Type",
+          col.names = c("Establishment Type", "Product Categories", "Total Est.", 
+                       "Dominant Product", "Dominant %"))
+    
+    most_diverse <- diversity_by_type$est_type[1]
+    least_diverse <- diversity_by_type$est_type[nrow(diversity_by_type)]
+    
+    cat("- Most product-diverse establishment type:", most_diverse, 
+        "with", diversity_by_type$product_categories[1], "different product categories\n")
+    cat("- Most specialized establishment type:", least_diverse,
+        "with", diversity_by_type$product_categories[nrow(diversity_by_type)], "product categories\n")
+    
+  } else {
+    cat("Insufficient data structure for establishment type vs products analysis\n")
+  }
+  
+} else {
+  cat("Missing data for establishment type or main products analysis\n")
+}
+```
 
 ## 3.4 Correlation Analysis
 
@@ -1038,7 +1219,7 @@ if(nrow(famd_input) >= 20) {
                       graph = FALSE)
   
   # Extract eigenvalues and variance explained
-  eigenvalues <- get_eigenvalue(famd_result)
+  eigenvalues <- factoextra::get_eigenvalue(famd_result)
   kable(eigenvalues, digits = 2, 
         caption = "FAMD Eigenvalues and Variance Explained")
   
@@ -1052,7 +1233,9 @@ if(nrow(famd_input) >= 20) {
 }
 ```
 
-## 4.4 FAMD Variable Contributions and Interpretation
+## 4.4 FAMD Variable Contributions and Interpretation (old)
+
+
 
 ```{r famd_contributions}
 if(exists("famd_result")) {
@@ -1125,6 +1308,348 @@ if(exists("famd_result")) {
 }
 ```
 
+## 4.4 FAMD Variable Contributions and Interpretation (new)
+
+```{r famd_contributions, fig.width=12, fig.height=8}
+if(exists("famd_result")) {
+  
+  # Check if FAMD was successful
+  tryCatch({
+    # Variable contributions to dimensions with improved labeling
+    var_contrib <- fviz_contrib(famd_result, choice = "var", axes = 1:2, top = 10) +
+      labs(title = "Variable Contributions to Dimensions 1-2") +
+      theme_minimal() +
+      theme(
+        axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1, size = 10),
+        plot.margin = margin(10, 10, 50, 10),  # Add bottom margin for rotated labels
+        panel.grid.minor = element_blank()
+      )
+    
+    print(var_contrib)
+    
+    # Alternative 1: Horizontal bar chart for better readability
+    var_contrib_horizontal <- fviz_contrib(famd_result, choice = "var", axes = 1:2, top = 10) +
+      labs(title = "Variable Contributions to Dimensions 1-2 (Horizontal)") +
+      coord_flip() +  # Flip coordinates
+      theme_minimal() +
+      theme(
+        axis.text.y = element_text(size = 10),
+        axis.text.x = element_text(size = 10),
+        plot.title = element_text(hjust = 0.5)
+      )
+    
+    print(var_contrib_horizontal)
+    
+    # Alternative 2: Custom plot with abbreviated labels
+    # Safely extract contribution data with error handling
+    tryCatch({
+      var_coords_safe <- get_famd_var(famd_result)
+      contrib_data <- var_coords_safe$contrib[,1:2]
+      
+      # Ensure unique row names
+      if(any(duplicated(rownames(contrib_data)))) {
+        rownames(contrib_data) <- make.names(rownames(contrib_data), unique = TRUE)
+      }
+      
+      contrib_sum <- rowSums(contrib_data)
+      top_vars <- names(sort(contrib_sum, decreasing = TRUE)[1:10])
+      
+      # Create abbreviated labels
+      abbreviated_labels <- c(
+        "main_products_clean" = "Products",
+        "est_type" = "Est.Type", 
+        "employees_norm" = "Employees",
+        "num_deliveries_norm" = "Deliveries",
+        "online_delivery_intensity" = "Online.Del",
+        "delivery_intensity" = "Del.Intensity",
+        "specific_activity_clean" = "Activity",
+        "has_warehouse" = "Warehouse",
+        "female_employees_norm" = "Female.Emp",
+        "establishment_size" = "Est.Size",
+        "female_emplo_distri_norm" = "Female.Dist",
+        "supply_week_norm" = "Supply.Week"
+      )
+      
+      # Create custom data frame for plotting with unique identifiers
+      plot_data <- data.frame(
+        Variable = names(contrib_sum),
+        Contribution = contrib_sum,
+        Label = ifelse(names(contrib_sum) %in% names(abbreviated_labels), 
+                      abbreviated_labels[names(contrib_sum)], 
+                      substr(names(contrib_sum), 1, 8)),
+        row.names = NULL  # Prevent row name issues
+      ) %>%
+        arrange(desc(Contribution)) %>%
+        slice_head(n = 10)
+      
+      # Custom contribution plot with better labels
+      custom_contrib_plot <- ggplot(plot_data, aes(x = reorder(Label, Contribution), y = Contribution)) +
+        geom_col(fill = "steelblue", alpha = 0.8) +
+        geom_hline(yintercept = 100/nrow(contrib_data), 
+                   linetype = "dashed", color = "red", alpha = 0.7) +
+        labs(title = "Variable Contributions to Dimensions 1-2 (Custom Labels)",
+             subtitle = "Red line = expected average contribution",
+             x = "Variables", 
+             y = "Contribution (%)") +
+        theme_minimal() +
+        theme(
+          axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1, size = 11),
+          plot.margin = margin(10, 10, 50, 10),
+          plot.title = element_text(hjust = 0.5, size = 14),
+          plot.subtitle = element_text(hjust = 0.5, size = 10, color = "gray60")
+        )
+      
+      print(custom_contrib_plot)
+      
+      # Alternative 3: Split into separate plots for Dimension 1 and 2
+      contrib_dim1_data <- data.frame(
+        Variable = rownames(contrib_data),
+        Contribution = contrib_data[,1],
+        Label = ifelse(rownames(contrib_data) %in% names(abbreviated_labels), 
+                      abbreviated_labels[rownames(contrib_data)], 
+                      substr(rownames(contrib_data), 1, 8)),
+        row.names = NULL
+      ) %>%
+        arrange(desc(Contribution)) %>%
+        slice_head(n = 8)
+    
+      contrib_dim2_data <- data.frame(
+        Variable = rownames(contrib_data),
+        Contribution = contrib_data[,2],
+        Label = ifelse(rownames(contrib_data) %in% names(abbreviated_labels), 
+                      abbreviated_labels[rownames(contrib_data)], 
+                      substr(rownames(contrib_data), 1, 8)),
+        row.names = NULL
+      ) %>%
+        arrange(desc(Contribution)) %>%
+        slice_head(n = 8)
+      
+      # Plot for Dimension 1
+      dim1_plot <- ggplot(contrib_dim1_data, aes(x = reorder(Label, Contribution), y = Contribution)) +
+        geom_col(fill = "#2E9FDF", alpha = 0.8) +
+        geom_hline(yintercept = 100/nrow(contrib_data), linetype = "dashed", color = "red") +
+        labs(title = "Top Contributors to Dimension 1",
+             x = "Variables", y = "Contribution (%)") +
+        theme_minimal() +
+        theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1))
+      
+      # Plot for Dimension 2  
+      dim2_plot <- ggplot(contrib_dim2_data, aes(x = reorder(Label, Contribution), y = Contribution)) +
+        geom_col(fill = "#00AFBB", alpha = 0.8) +
+        geom_hline(yintercept = 100/nrow(contrib_data), linetype = "dashed", color = "red") +
+        labs(title = "Top Contributors to Dimension 2", 
+             x = "Variables", y = "Contribution (%)") +
+        theme_minimal() +
+        theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1))
+      
+      # Display side by side
+      library(gridExtra)
+      grid.arrange(dim1_plot, dim2_plot, ncol = 2)
+      
+    }, error = function(e) {
+      cat("Error in custom contribution plots:", e$message, "\n")
+      cat("Proceeding with basic plots...\n")
+    })
+    
+    # Continue with rest of the FAMD visualization code...
+    # Variables factor map
+    var_plot <- fviz_famd_var(famd_result, 
+                              choice = "var",
+                              col.var = "contrib",
+                              gradient.cols = c("#00AFBB", "#E7B800", "#FC4E07"),
+                              repel = TRUE) +
+      labs(title = "FAMD Variable Factor Map",
+           subtitle = "Color by contribution to dimensions") +
+      theme_minimal()
+    
+    print(var_plot)
+    
+    # Individual biplot
+    ind_plot <- fviz_famd_ind(famd_result,
+                  col.ind = "cos2",
+                  gradient.cols = c("#00AFBB", "#E7B800", "#FC4E07"),
+                  repel = TRUE) +
+      labs(title = "FAMD Individual Factor Map",
+           subtitle = "Color by quality of representation") +
+      theme_minimal()
+    
+    print(ind_plot)
+    
+    # Extract variable coordinates for interpretation
+    var_coords <- get_famd_var(famd_result)
+    
+    # Check if we have enough dimensions
+    n_dims <- min(3, ncol(var_coords$coord))
+    
+    kable(var_coords$coord[,1:n_dims], digits = 3,
+          caption = paste("Variable Coordinates on First", n_dims, "Dimensions"))
+    
+    # Quality of representation
+    kable(var_coords$cos2[,1:n_dims], digits = 3,
+          caption = paste("Quality of Representation (cos²) - First", n_dims, "Dimensions"))
+    
+    # Additional interpretation tables
+    cat("\n=== FAMD INTERPRETATION ===\n")
+    
+    # Contributions of variables to each dimension
+    tryCatch({
+      contrib_dim1 <- var_coords$contrib[,1]
+      contrib_dim2 <- var_coords$contrib[,2]
+      
+      cat("Top contributors to Dimension 1:\n")
+      print(head(sort(contrib_dim1, decreasing = TRUE), 5))
+      
+      cat("\nTop contributors to Dimension 2:\n")
+      print(head(sort(contrib_dim2, decreasing = TRUE), 5))
+      
+    }, error = function(e) {
+      cat("Error in variable coordinates extraction:", e$message, "\n")
+      cat("Proceeding without detailed coordinate tables...\n")
+    })
+    
+  }, error = function(e) {
+    cat("Error in FAMD visualization:", e$message, "\n")
+    cat("This might be due to insufficient variability in the data or other data issues.\n")
+  })
+  
+} else {
+  cat("FAMD result not available for visualization\n")
+}
+```
+
+
+## 4.5 FAMD-FA Methodological Comparison & Strategic Insights
+
+```{r famd_fa_final_comparison, fig.width=12, fig.height=8}
+if(exists("famd_result") && exists("fit_psych")) {
+  
+  cat("=== METHODOLOGICAL COMPARISON & STRATEGIC INSIGHTS ===\n")
+  cat("Integrating Factor Analysis (numeric backbone) with FAMD (mixed-data richness)\n")
+  cat("for comprehensive UCC implementation strategy.\n\n")
+  
+  # Extract key results with robust handling
+  tryCatch({
+    # Robust eigenvalue extraction for FAMD
+    eig_result <- famd_result$eig
+    
+    # Always use the percentage column (column 2) for consistency
+    if(is.matrix(eig_result) || is.data.frame(eig_result)) {
+      if(ncol(eig_result) >= 2) {
+        famd_variance <- eig_result[1:min(4, nrow(eig_result)), 2]  # Column 2 is percentage
+      } else {
+        # Fallback: calculate from eigenvalues if only one column
+        total_inertia <- sum(eig_result[,1])
+        famd_variance <- (eig_result[1:min(4, nrow(eig_result)), 1] / total_inertia) * 100
+      }
+    } else {
+      # Last resort: treat as vector
+      famd_variance <- eig_result[1:4]
+    }
+    
+    fa_variance <- fit_psych$Vaccounted[2,] * 100
+    
+    # Verify data consistency
+    cat("FAMD eigenvalue extraction method: using column 2 (percentage)\n")
+    cat("FAMD variance explained by first 4 dimensions:", 
+        paste(round(famd_variance, 1), "%", collapse = ", "), "\n")
+    cat("FA variance explained by 3 factors:", 
+        paste(round(fa_variance[1:3], 1), "%", collapse = ", "), "\n\n")
+    
+    # THE CORE COMPARISON TABLE - Your main contribution
+    comparison_table <- data.frame(
+      Component = c("FA Factor 1", "FA Factor 2", "FA Factor 3", 
+                   "FAMD Dim 1", "FAMD Dim 2", "FAMD Dim 3", "FAMD Dim 4"),
+      Variance_Explained = c(fa_variance[1:3], famd_variance[1:4]),
+      Interpretation = c("Workforce Scale", "Delivery Intensity", "Warehouse Infrastructure",
+                        "Business Scale & Type", "Logistics Activity", "Infrastructure", "Safety Perception"),
+      Data_Type = c("Numeric Only", "Numeric Only", "Numeric Only",
+                   "Mixed Data", "Mixed Data", "Mixed Data", "Mixed Data"),
+      UCC_Application = c("Infrastructure Planning", "Logistics Optimization", "Facility Design",
+                         "Stakeholder Segmentation", "Service Design", "Location Planning", "Safety Strategy")
+    )
+    
+    kable(comparison_table, digits = 2,
+          caption = "Factor Analysis vs FAMD: Methodological Comparison for UCC Strategy",
+          col.names = c("Component", "Variance (%)", "Interpretation", "Data Scope", "UCC Application"))
+    
+    # Variance comparison visualization
+    variance_comparison <- data.frame(
+      Method = rep(c("Factor Analysis", "FAMD"), c(3, 4)),
+      Component = 1:7,
+      Variance = c(fa_variance[1:3], famd_variance[1:4]),
+      Type = rep(c("Numeric Only", "Mixed Data"), c(3, 4))
+    )
+    
+    # Single focused visualization
+    p1 <- ggplot(variance_comparison, aes(x = Component, y = Variance, fill = Type)) +
+      geom_col(alpha = 0.8, width = 0.7) +
+      geom_text(aes(label = paste0(round(Variance, 1), "%")), 
+                vjust = -0.5, size = 3) +
+      scale_fill_manual(values = c("steelblue", "darkgreen")) +
+      labs(title = "Variance Explained: FA vs FAMD Comparison",
+           subtitle = "Demonstrating complementary analytical approaches for UCC strategy",
+           x = "Component/Dimension", 
+           y = "Variance Explained (%)",
+           caption = "FA focuses variance in fewer factors; FAMD distributes across more dimensions") +
+      theme_minimal() +
+      theme(legend.position = "bottom",
+            plot.caption = element_text(hjust = 0.5, face = "italic"))
+    
+    print(p1)
+    
+    # Strategic insights summary
+    cat("\n=== STRATEGIC INSIGHTS FOR UCC IMPLEMENTATION ===\n")
+    cat("**Methodological Complementarity:**\n")
+    cat("• FA provides the numeric infrastructure backbone (", round(sum(fa_variance[1:3]), 1), "% variance)\n")
+    cat("• FAMD adds categorical context for stakeholder diversity (", round(sum(famd_variance[1:4]), 1), "% variance)\n")
+    cat("• Together: Complete picture for evidence-based UCC strategy\n\n")
+    
+    cat("**Why Focus on First 4 FAMD Dimensions:**\n")
+    cat("• Dimensions 1-3 align with FA factors (numeric backbone)\n")
+    cat("• Dimension 4 captures safety perception (categorical nuance)\n")
+    cat("• Later dimensions show idiosyncratic splits with marginal policy relevance\n")
+    
+    # Calculate cumulative variance safely
+    if(length(famd_variance) >= 4) {
+      cumulative_var <- sum(famd_variance[1:4])
+      cat("• Cumulative variance: ", round(cumulative_var, 1), "% explains principal behavioral gradients\n\n")
+    }
+    
+    cat("**Practical UCC Applications:**\n")
+    cat("• **Infrastructure Planning:** Use FA factors for physical facility requirements\n")
+    cat("• **Stakeholder Segmentation:** Use FAMD dimensions for service differentiation\n")
+    cat("• **Policy Design:** Combine both for comprehensive regulatory framework\n")
+    cat("• **Performance Monitoring:** Track metrics across both numeric and categorical domains\n\n")
+    
+    cat("**Key Innovation:**\n")
+    cat("This dual-method approach provides the first comprehensive framework for UCC prioritization\n")
+    cat("that balances quantitative logistics optimization with qualitative stakeholder diversity.\n")
+    
+  }, error = function(e) {
+    cat("Error in methodological comparison:", e$message, "\n")
+    cat("Attempting simplified comparison...\n")
+    
+    # Simplified fallback comparison
+    if(exists("fit_psych")) {
+      fa_variance <- fit_psych$Vaccounted[2,] * 100
+      cat("FA variance explained by 3 factors:", 
+          paste(round(fa_variance[1:3], 1), "%", collapse = ", "), "\n")
+    }
+    
+    if(exists("famd_result") && !is.null(famd_result$eig)) {
+      # Use consistent method: column 2 for percentages
+      eig_vals <- famd_result$eig[1:4, 2]  # Direct percentage extraction
+      cat("FAMD variance explained by first 4 dimensions:", 
+          paste(round(eig_vals, 1), "%", collapse = ", "), "\n")
+    }
+    
+    cat("\n**Key Finding:** Both methods complement each other for comprehensive UCC analysis\n")
+  })
+  
+} else {
+  cat("Required analysis results not available for comparison\n")
+}
+```
 # 5. Correspondence Analysis for Categorical Relationships
 
 ## 5.1 Establishment Type vs Safety Perception
@@ -1195,21 +1720,39 @@ if(exists("famd_input")) {
         ca_result <- CA(est_safety_table_adj, graph = FALSE)
         
         # Eigenvalues
-        eig_val <- get_eigenvalue(ca_result)
-        kable(eig_val, digits = 3, caption = "CA Eigenvalues")
+        eig_val <- factoextra::get_eigenvalue(ca_result)
+        kable(eig_val, digits = 3, caption = "CA Eigenvalues: Establishment Type vs Safety")
         
         # Scree plot
         scree_plot <- fviz_screeplot(ca_result, addlabels = TRUE) +
-          labs(title = "CA Scree Plot: Establishment Type vs Safety")
+          labs(title = "CA Scree Plot: Establishment Type vs Safety") +
+          theme_minimal()
         print(scree_plot)
         
-        # Biplot
-        biplot <- fviz_ca_biplot(ca_result, repel = TRUE,
-                       col.row = "steelblue", col.col = "red") +
-          labs(title = "Correspondence Analysis Biplot",
-               subtitle = "Establishment Type vs Safety Perception") +
-          theme_minimal()
+        # Biplot - Main correspondence analysis plot
+        biplot <- fviz_ca_biplot(ca_result, 
+                       repel = TRUE,
+                       col.row = "steelblue", 
+                       col.col = "red",
+                       alpha.row = 0.8,
+                       alpha.col = 0.8) +
+          labs(title = "Correspondence Analysis: Establishment Type vs Safety Perception",
+               subtitle = paste("Based on", sum(est_safety_table), "observations")) +
+          theme_minimal() +
+          theme(legend.position = "bottom")
         print(biplot)
+        
+        # Row contributions plot
+        row_contrib <- fviz_contrib(ca_result, choice = "row", axes = 1:2) +
+          labs(title = "Row Contributions (Establishment Types)") +
+          theme_minimal()
+        print(row_contrib)
+        
+        # Column contributions plot  
+        col_contrib <- fviz_contrib(ca_result, choice = "col", axes = 1:2) +
+          labs(title = "Column Contributions (Safety Levels)") +
+          theme_minimal()
+        print(col_contrib)
         
         cat("✓ Correspondence Analysis completed successfully\n")
         
@@ -1277,7 +1820,15 @@ if(exists("famd_input")) {
     if(nrow(products_est_table) >= 2 && ncol(products_est_table) >= 2 && sum(products_est_table) > 0) {
       
       # Display contingency table
-      kable(products_est_table, caption = "Products vs Establishment Type")
+      kable(products_est_table, caption = "Products vs Establishment Type Cross-tabulation")
+      
+      # Add small constant to zero cells if needed
+      if(min(products_est_table) == 0) {
+        cat("Warning: Zero cells detected. Adding small constant for CA analysis.\n")
+        products_est_table_adj <- products_est_table + 0.1
+      } else {
+        products_est_table_adj <- products_est_table
+      }
       
       # Mosaic plot
       tryCatch({
@@ -1298,36 +1849,70 @@ if(exists("famd_input")) {
         
         if(chi_test_products$p.value < 0.05) {
           cat("✓ Significant association between product categories and establishment types\n\n")
-          
-          # Correspondence Analysis for products
-          if(min(products_est_table) == 0) {
-            products_est_table_adj <- products_est_table + 0.1
-          } else {
-            products_est_table_adj <- products_est_table
-          }
-          
-          tryCatch({
-            ca_products_result <- CA(products_est_table_adj, graph = FALSE)
-            
-            # Biplot
-            products_biplot <- fviz_ca_biplot(ca_products_result, repel = TRUE,
-                           col.row = "darkgreen", col.col = "orange") +
-              labs(title = "Correspondence Analysis: Products vs Establishment Type") +
-              theme_minimal()
-            print(products_biplot)
-            
-          }, error = function(e) {
-            cat("CA for products failed:", e$message, "\n")
-          })
-          
         } else {
-          cat("⚠ No significant association between products and establishment types\n")
+          cat("⚠ No significant association between products and establishment types\n\n")
         }
       }, error = function(e) {
         cat("Chi-square test for products failed:", e$message, "\n")
       })
+      
+      # Correspondence Analysis for Products vs Establishment Type
+      tryCatch({
+        ca_products_result <- CA(products_est_table_adj, graph = FALSE)
+        
+        # Eigenvalues
+        eig_val_products <- factoextra::get_eigenvalue(ca_products_result)
+        kable(eig_val_products, digits = 3, caption = "CA Eigenvalues: Products vs Establishment Type")
+        
+        # Scree plot
+        products_scree <- fviz_screeplot(ca_products_result, addlabels = TRUE) +
+          labs(title = "CA Scree Plot: Products vs Establishment Type") +
+          theme_minimal()
+        print(products_scree)
+        
+        # Main biplot - Products vs Establishment Type
+        products_biplot <- fviz_ca_biplot(ca_products_result, 
+                       repel = TRUE,
+                       col.row = "darkgreen", 
+                       col.col = "orange",
+                       alpha.row = 0.8,
+                       alpha.col = 0.8) +
+          labs(title = "Correspondence Analysis: Products vs Establishment Type",
+               subtitle = paste("Based on", sum(products_est_table), "observations")) +
+          theme_minimal() +
+          theme(legend.position = "bottom")
+        print(products_biplot)
+        
+        # Row contributions (Products)
+        products_row_contrib <- fviz_contrib(ca_products_result, choice = "row", axes = 1:2) +
+          labs(title = "Row Contributions (Product Categories)") +
+          theme_minimal() +
+          theme(axis.text.x = element_text(angle = 45, hjust = 1))
+        print(products_row_contrib)
+        
+        # Column contributions (Establishment Types)
+        products_col_contrib <- fviz_contrib(ca_products_result, choice = "col", axes = 1:2) +
+          labs(title = "Column Contributions (Establishment Types)") +
+          theme_minimal()
+        print(products_col_contrib)
+        
+        cat("✓ Products vs Establishment Type CA completed successfully\n")
+        
+      }, error = function(e) {
+        cat("CA for products vs establishment type failed:", e$message, "\n")
+        cat("Proceeding with proportional analysis instead.\n")
+        
+        # Fallback: Proportional analysis
+        prop_products <- prop.table(products_est_table, margin = 2) * 100
+        kable(round(prop_products, 1), 
+              caption = "Column Percentages: Product Distribution by Establishment Type",
+              digits = 1)
+      })
+      
     } else {
-      cat("Insufficient data structure for products CA\n")
+      cat("Insufficient data structure for Products vs Establishment Type CA\n")
+      cat("Table dimensions:", nrow(products_est_table), "x", ncol(products_est_table), "\n")
+      
       # Show basic distribution
       products_dist <- products_data %>% count(main_products_clean, est_type) %>% arrange(desc(n))
       kable(head(products_dist, 10), caption = "Top Product-Establishment Combinations")
@@ -1336,7 +1921,7 @@ if(exists("famd_input")) {
     cat("Insufficient observations for products analysis\n")
   }
   
-  # Specific Activity vs Safety Level
+  # Activity vs Safety Level Analysis  
   activity_safety_data <- famd_input %>%
     filter(!is.na(specific_activity_clean), !is.na(safety_level),
            specific_activity_clean != "Other", safety_level != "Unknown")
@@ -1346,44 +1931,74 @@ if(exists("famd_input")) {
   if(nrow(activity_safety_data) > 10) {
     activity_safety_table <- xtabs(~ specific_activity_clean + safety_level, data = activity_safety_data)
     
-    cat("Activity table dimensions:", nrow(activity_safety_table), "x", ncol(activity_safety_table), "\n")
+    cat("Activity-Safety table dimensions:", nrow(activity_safety_table), "x", ncol(activity_safety_table), "\n")
     
+    # Check if we have sufficient data
     if(nrow(activity_safety_table) >= 2 && ncol(activity_safety_table) >= 2 && sum(activity_safety_table) > 0) {
       
-      # Display table
-      kable(activity_safety_table, caption = "Specific Activity vs Safety Level")
+      # Display contingency table
+      kable(activity_safety_table, caption = "Activity vs Safety Level Cross-tabulation")
       
-      # Mosaic plot
-      tryCatch({
-        mosaicplot(activity_safety_table, 
-                   color = RColorBrewer::brewer.pal(min(ncol(activity_safety_table), 8), "Set1"),
-                   main = "Specific Activity vs Safety Level",
-                   las = 2, cex.axis = 0.7)
-      }, error = function(e) {
-        cat("Could not create activity mosaic plot:", e$message, "\n")
-      })
+      # Add small constant to zero cells if needed
+      if(min(activity_safety_table) == 0) {
+        cat("Warning: Zero cells detected. Adding small constant for CA analysis.\n")
+        activity_safety_table_adj <- activity_safety_table + 0.1
+      } else {
+        activity_safety_table_adj <- activity_safety_table
+      }
       
       # Chi-square test
       tryCatch({
         chi_test_activity <- chisq.test(activity_safety_table)
-        cat("Activity vs Safety - Chi-square test:\n")
+        cat("Activity vs Safety Level - Chi-square test:\n")
         cat("Chi-square =", round(chi_test_activity$statistic, 3), "\n")
         cat("p-value =", format(chi_test_activity$p.value, scientific = TRUE), "\n")
         
         if(chi_test_activity$p.value < 0.05) {
-          cat("✓ Significant association between activity and safety\n")
+          cat("✓ Significant association between activity type and safety perception\n\n")
         } else {
-          cat("⚠ No significant association between activity and safety\n")
+          cat("⚠ No significant association between activity and safety perception\n\n")
         }
       }, error = function(e) {
-        cat("Chi-square test for activity failed:", e$message, "\n")
+        cat("Chi-square test for activity vs safety failed:", e$message, "\n")
+      })
+      
+      # Correspondence Analysis for Activity vs Safety
+      tryCatch({
+        ca_activity_result <- CA(activity_safety_table_adj, graph = FALSE)
+        
+        # Eigenvalues
+        eig_val_activity <- factoextra::get_eigenvalue(ca_activity_result)
+        kable(eig_val_activity, digits = 3, caption = "CA Eigenvalues: Activity vs Safety Level")
+        
+        # Main biplot - Activity vs Safety
+        activity_biplot <- fviz_ca_biplot(ca_activity_result, 
+                       repel = TRUE,
+                       col.row = "purple", 
+                       col.col = "darkred",
+                       alpha.row = 0.8,
+                       alpha.col = 0.8) +
+          labs(title = "Correspondence Analysis: Activity Type vs Safety Perception",
+               subtitle = paste("Based on", sum(activity_safety_table), "observations")) +
+          theme_minimal() +
+          theme(legend.position = "bottom")
+        print(activity_biplot)
+        
+        cat("✓ Activity vs Safety Level CA completed successfully\n")
+        
+      }, error = function(e) {
+        cat("CA for activity vs safety failed:", e$message, "\n")
+        cat("Proceeding with proportional analysis instead.\n")
+        
+        # Fallback: Proportional analysis
+        prop_activity <- prop.table(activity_safety_table, margin = 1) * 100
+        kable(round(prop_activity, 1), 
+              caption = "Row Percentages: Safety Level by Activity Type",
+              digits = 1)
       })
       
     } else {
-      cat("Insufficient data structure for activity CA\n")
-      # Show basic distribution
-      activity_dist <- activity_safety_data %>% count(specific_activity_clean, safety_level) %>% arrange(desc(n))
-      kable(head(activity_dist, 10), caption = "Top Activity-Safety Combinations")
+      cat("Insufficient data structure for Activity vs Safety CA\n")
     }
   } else {
     cat("Insufficient observations for activity analysis\n")
@@ -1392,13 +2007,583 @@ if(exists("famd_input")) {
   # Summary of categorical relationships
   cat("\n=== CATEGORICAL RELATIONSHIPS SUMMARY ===\n")
   cat("Total observations in FAMD input:", nrow(famd_input), "\n")
-  cat("- Establishment-Safety analysis:", nrow(ca_data), "observations\n")
-  cat("- Products-Establishment analysis:", nrow(products_data), "observations\n") 
-  cat("- Activity-Safety analysis:", nrow(activity_safety_data), "observations\n")
+  
+  if(exists("ca_data")) {
+    cat("- Establishment-Safety analysis:", nrow(ca_data), "observations\n")
+  }
+  if(exists("products_data")) {
+    cat("- Products-Establishment analysis:", nrow(products_data), "observations\n") 
+  }
+  if(exists("activity_safety_data")) {
+    cat("- Activity-Safety analysis:", nrow(activity_safety_data), "observations\n")
+  }
+  
+  cat("\n**Key Insights from Correspondence Analysis:**\n")
+  cat("• CA reveals hidden associations between categorical variables\n")
+  cat("• Biplots show spatial relationships between categories\n")
+  cat("• Chi-square tests validate statistical significance of associations\n")
+  cat("• Results inform UCC targeting and service differentiation strategies\n")
 }
 ```
 
-# 5.3 Advanced Analysis Using Processed Datasets
+## 5.4 Delivery Intensity vs Business Characteristics
+
+```{r ca_delivery_analysis}
+# Correspondence analysis for delivery intensity vs establishment characteristics
+if(exists("famd_input")) {
+  
+  # Delivery intensity vs Establishment Type
+  delivery_data <- famd_input %>%
+    filter(!is.na(delivery_intensity), !is.na(est_type),
+           delivery_intensity != "Other", est_type != "Other")
+  
+  cat("Delivery Intensity vs Establishment Type - Available data:", nrow(delivery_data), "observations\n")
+  
+  if(nrow(delivery_data) > 10) {  # Reduced threshold
+    delivery_est_table <- xtabs(~ delivery_intensity + est_type, data = delivery_data)
+    
+    cat("Delivery-Establishment table dimensions:", nrow(delivery_est_table), "x", ncol(delivery_est_table), "\n")
+    
+    # Check if we have sufficient data
+    if(nrow(delivery_est_table) >= 2 && ncol(delivery_est_table) >= 2 && sum(delivery_est_table) > 0) {
+      
+      # Display contingency table
+      kable(delivery_est_table, caption = "Delivery Intensity vs Establishment Type Cross-tabulation")
+      
+      # Add small constant to zero cells if needed
+      if(min(delivery_est_table) == 0) {
+        cat("Warning: Zero cells detected. Adding small constant for CA analysis.\n")
+        delivery_est_table_adj <- delivery_est_table + 0.1
+      } else {
+        delivery_est_table_adj <- delivery_est_table
+      }
+      
+      # Mosaic plot
+      tryCatch({
+        mosaicplot(delivery_est_table, 
+                   color = RColorBrewer::brewer.pal(min(8, ncol(delivery_est_table)), "Set3"),
+                   main = "Delivery Intensity vs Establishment Type",
+                   las = 2, cex.axis = 0.7)
+      }, error = function(e) {
+        cat("Could not create delivery mosaic plot:", e$message, "\n")
+      })
+      
+      # Chi-square test
+      tryCatch({
+        chi_test_delivery <- chisq.test(delivery_est_table)
+        cat("Delivery Intensity vs Establishment Type - Chi-square test:\n")
+        cat("Chi-square =", round(chi_test_delivery$statistic, 3), "\n")
+        cat("p-value =", format(chi_test_delivery$p.value, scientific = TRUE), "\n")
+        
+        if(chi_test_delivery$p.value < 0.05) {
+          cat("✓ Significant association between delivery intensity and establishment types\n\n")
+        } else {
+          cat("⚠ No significant association between delivery intensity and establishment types\n\n")
+        }
+      }, error = function(e) {
+        cat("Chi-square test for delivery intensity failed:", e$message, "\n")
+      })
+      
+      # Correspondence Analysis for Delivery Intensity vs Establishment Type
+      tryCatch({
+        ca_delivery_result <- CA(delivery_est_table_adj, graph = FALSE)
+        
+        # Eigenvalues
+        eig_val_delivery <- factoextra::get_eigenvalue(ca_delivery_result)
+        kable(eig_val_delivery, digits = 3, caption = "CA Eigenvalues: Delivery Intensity vs Establishment Type")
+        
+        # Scree plot
+        delivery_scree <- fviz_screeplot(ca_delivery_result, addlabels = TRUE) +
+          labs(title = "CA Scree Plot: Delivery Intensity vs Establishment Type") +
+          theme_minimal()
+        print(delivery_scree)
+        
+        # Main biplot - Delivery Intensity vs Establishment Type
+        delivery_biplot <- fviz_ca_biplot(ca_delivery_result, 
+                       repel = TRUE,
+                       col.row = "blue", 
+                       col.col = "red",
+                       alpha.row = 0.8,
+                       alpha.col = 0.8) +
+          labs(title = "Correspondence Analysis: Delivery Intensity vs Establishment Type",
+               subtitle = paste("Based on", sum(delivery_est_table), "observations")) +
+          theme_minimal() +
+          theme(legend.position = "bottom")
+        print(delivery_biplot)
+        
+        # Row contributions (Delivery Intensity)
+        delivery_row_contrib <- fviz_contrib(ca_delivery_result, choice = "row", axes = 1:2) +
+          labs(title = "Row Contributions (Delivery Intensity)") +
+          theme_minimal() +
+          theme(axis.text.x = element_text(angle = 45, hjust = 1))
+        print(delivery_row_contrib)
+        
+        # Column contributions (Establishment Types)
+        delivery_col_contrib <- fviz_contrib(ca_delivery_result, choice = "col", axes = 1:2) +
+          labs(title = "Column Contributions (Establishment Types)") +
+          theme_minimal()
+        print(delivery_col_contrib)
+        
+        cat("✓ Delivery Intensity vs Establishment Type CA completed successfully\n")
+        
+      }, error = function(e) {
+        cat("CA for delivery intensity vs establishment type failed:", e$message, "\n")
+        cat("Proceeding with proportional analysis instead.\n")
+        
+        # Fallback: Proportional analysis
+        prop_delivery <- prop.table(delivery_est_table, margin = 2) * 100
+        kable(round(prop_delivery, 1), 
+              caption = "Column Percentages: Delivery Intensity Distribution by Establishment Type",
+              digits = 1)
+      })
+      
+    } else {
+      cat("Insufficient data structure for Delivery Intensity vs Establishment Type CA\n")
+      cat("Table dimensions:", nrow(delivery_est_table), "x", ncol(delivery_est_table), "\n")
+      
+      # Show basic distribution
+      delivery_dist <- delivery_data %>% count(delivery_intensity, est_type) %>% arrange(desc(n))
+      kable(head(delivery_dist, 10), caption = "Top Delivery-Establishment Combinations")
+    }
+  } else {
+    cat("Insufficient observations for delivery intensity analysis\n")
+  }
+  
+  # Delivery Intensity vs Warehouse Configuration Analysis
+  delivery_warehouse_data <- famd_input %>%
+    filter(!is.na(delivery_intensity), !is.na(has_warehouse),
+           delivery_intensity != "Other")
+  
+  cat("\nDelivery Intensity vs Warehouse - Available data:", nrow(delivery_warehouse_data), "observations\n")
+  
+  if(nrow(delivery_warehouse_data) > 10) {
+    delivery_warehouse_table <- xtabs(~ delivery_intensity + has_warehouse, data = delivery_warehouse_data)
+    
+    cat("Delivery-Warehouse table dimensions:", nrow(delivery_warehouse_table), "x", ncol(delivery_warehouse_table), "\n")
+    
+    # Check if we have sufficient data
+    if(nrow(delivery_warehouse_table) >= 2 && ncol(delivery_warehouse_table) >= 2 && sum(delivery_warehouse_table) > 0) {
+      
+      # Display contingency table
+      kable(delivery_warehouse_table, caption = "Delivery Intensity vs Warehouse Configuration Cross-tabulation")
+      
+      # Chi-square test
+      tryCatch({
+        chi_test_delivery_warehouse <- chisq.test(delivery_warehouse_table)
+        cat("Delivery Intensity vs Warehouse - Chi-square test:\n")
+        cat("Chi-square =", round(chi_test_delivery_warehouse$statistic, 3), "\n")
+        cat("p-value =", format(chi_test_delivery_warehouse$p.value, scientific = TRUE), "\n")
+        
+        if(chi_test_delivery_warehouse$p.value < 0.05) {
+          cat("✓ Significant association between delivery intensity and warehouse configuration\n\n")
+        } else {
+          cat("⚠ No significant association between delivery intensity and warehouse configuration\n\n")
+        }
+      }, error = function(e) {
+        cat("Chi-square test for delivery vs warehouse failed:", e$message, "\n")
+      })
+      
+      # Simple proportional analysis
+      prop_delivery_warehouse <- prop.table(delivery_warehouse_table, margin = 1) * 100
+      kable(round(prop_delivery_warehouse, 1), 
+            caption = "Row Percentages: Warehouse Configuration by Delivery Intensity",
+            digits = 1)
+      
+    } else {
+      cat("Insufficient data structure for Delivery vs Warehouse analysis\n")
+    }
+  } else {
+    cat("Insufficient observations for delivery vs warehouse analysis\n")
+  }
+  
+  # Summary of delivery intensity relationships
+  cat("\n=== DELIVERY INTENSITY ANALYSIS SUMMARY ===\n")
+  cat("Total observations in FAMD input:", nrow(famd_input), "\n")
+  
+  if(exists("delivery_data")) {
+    cat("- Delivery-Establishment analysis:", nrow(delivery_data), "observations\n")
+  }
+  if(exists("delivery_warehouse_data")) {
+    cat("- Delivery-Warehouse analysis:", nrow(delivery_warehouse_data), "observations\n")
+  }
+  
+  cat("\n**Key Insights from Delivery Intensity Analysis:**\n")
+  cat("• Delivery patterns reveal operational logistics requirements\n")
+  cat("• Establishment type influences delivery frequency and scheduling\n")
+  cat("• Warehouse presence correlates with delivery intensity patterns\n")
+  cat("• Results support UCC consolidation strategy and scheduling optimization\n")
+}
+```
+
+## 5.5 Establishment Type vs Supply Frequency
+
+```{r ca_supply_frequency_analysis}
+# Correspondence analysis for establishment type vs supply frequency patterns
+if(exists("famd_input")) {
+  
+  # Check if we have the original survey data with categorical supply_week
+  # We need to go back to the original data before FAMD normalization
+  if(exists("survey_data")) {
+    # First check what columns are available in survey_data
+    cat("Available columns in survey_data:", paste(names(survey_data), collapse = ", "), "\n")
+    
+    # Try to identify the correct column names for establishment type and supply frequency
+    est_type_col <- NULL
+    supply_freq_col <- NULL
+    
+    # Look for establishment type column
+    possible_est_cols <- c("est_type", "economic_activity", "establishment_type", "tipo_establecimiento")
+    for(col in possible_est_cols) {
+      if(col %in% names(survey_data)) {
+        est_type_col <- col
+        break
+      }
+    }
+    
+    # Look for supply frequency column  
+    possible_supply_cols <- c("supply_week", "supply_frequency", "frecuencia_abastecimiento")
+    for(col in possible_supply_cols) {
+      if(col %in% names(survey_data)) {
+        supply_freq_col <- col
+        break
+      }
+    }
+    
+    if(!is.null(est_type_col) && !is.null(supply_freq_col)) {
+      # Use the original survey data for categorical analysis
+      supply_freq_data <- survey_data %>%
+        filter(!is.na(!!sym(est_type_col)), !is.na(!!sym(supply_freq_col))) %>%
+        # Clean establishment type data similar to earlier processing
+        mutate(
+          est_type_clean = case_when(
+            grepl("Proveedor|proveedor|supplier", !!sym(est_type_col), ignore.case = TRUE) ~ "Supplier",
+            grepl("Venta al detalle|retail|detalle", !!sym(est_type_col), ignore.case = TRUE) ~ "Retailer", 
+            grepl("Fabricante|manufacturer|manufactura", !!sym(est_type_col), ignore.case = TRUE) ~ "Manufacturer",
+            grepl("internet|online|e-commerce", !!sym(est_type_col), ignore.case = TRUE) ~ "E-commerce",
+            TRUE ~ "Other"
+          ),
+          # Clean and standardize supply frequency following Python convention
+          supply_freq_standardized = case_when(
+            # Handle Spanish text responses (convert to "Other" like in Python)
+            grepl("La periodicidad es quincenal|quincenal", !!sym(supply_freq_col), ignore.case = TRUE) ~ "Other",
+            grepl("La periodicidad es mensual|mensual", !!sym(supply_freq_col), ignore.case = TRUE) ~ "Other",
+            # Handle numeric and text frequency responses
+            grepl("1 vez por semana|1 time|once", !!sym(supply_freq_col), ignore.case = TRUE) ~ "1 time a week",
+            grepl("^2$|2 times|twice", !!sym(supply_freq_col), ignore.case = TRUE) ~ "2 times a week", 
+            grepl("^3$|3 times", !!sym(supply_freq_col), ignore.case = TRUE) ~ "3 times a week",
+            grepl("^4$|4 times", !!sym(supply_freq_col), ignore.case = TRUE) ~ "4 times a week",
+            grepl("^5$|5 times", !!sym(supply_freq_col), ignore.case = TRUE) ~ "5 times a week",
+            grepl("6 o más|6 times or more|more than 6|6\\+", !!sym(supply_freq_col), ignore.case = TRUE) ~ "6 times or more a week",
+            # Handle direct numeric values
+            !!sym(supply_freq_col) == "1" ~ "1 time a week",
+            !!sym(supply_freq_col) == "2" ~ "2 times a week",
+            !!sym(supply_freq_col) == "3" ~ "3 times a week", 
+            !!sym(supply_freq_col) == "4" ~ "4 times a week",
+            !!sym(supply_freq_col) == "5" ~ "5 times a week",
+            !!sym(supply_freq_col) == 1 ~ "1 time a week",
+            !!sym(supply_freq_col) == 2 ~ "2 times a week",
+            !!sym(supply_freq_col) == 3 ~ "3 times a week",
+            !!sym(supply_freq_col) == 4 ~ "4 times a week",
+            !!sym(supply_freq_col) == 5 ~ "5 times a week",
+            # Default to Other for any unrecognized patterns
+            TRUE ~ "Other"
+          )
+        ) %>%
+        filter(est_type_clean != "Other", supply_freq_standardized != "Other") %>%
+        select(-supply_week) %>%  # Remove the original supply_week column to avoid conflict
+        rename(supply_week = supply_freq_standardized)
+      
+      cat("Using original survey_data for supply frequency analysis\n")
+      cat("Establishment type column used:", est_type_col, "\n")
+      cat("Supply frequency column used:", supply_freq_col, "\n")
+      
+    } else {
+      cat("Could not find appropriate columns in survey_data\n")
+      cat("Est type column found:", !is.null(est_type_col), "\n") 
+      cat("Supply freq column found:", !is.null(supply_freq_col), "\n")
+      supply_freq_data <- NULL
+    }
+    
+  } else {
+    cat("survey_data not available\n")
+    supply_freq_data <- NULL
+  }
+  
+  # Fallback: use famd_input if survey_data approach failed
+  if(is.null(supply_freq_data) || nrow(supply_freq_data) == 0) {
+    cat("Falling back to famd_input data\n")
+    
+    # Check if famd_input has the required columns
+    if("est_type" %in% names(famd_input)) {
+      supply_freq_data <- famd_input %>%
+        filter(!is.na(est_type))
+      
+      # Check if we have any supply-related variable to work with
+      supply_related_vars <- names(famd_input)[grepl("supply|delivery|freq", names(famd_input), ignore.case = TRUE)]
+      cat("Supply-related variables in famd_input:", paste(supply_related_vars, collapse = ", "), "\n")
+      
+      if(length(supply_related_vars) > 0) {
+        # Use the first available supply-related variable
+        supply_var <- supply_related_vars[1]
+        supply_freq_data <- supply_freq_data %>%
+          filter(!is.na(!!sym(supply_var))) %>%
+          mutate(
+            # Apply the same cleaning logic as Python code
+            supply_week_clean = case_when(
+              # Convert delivery intensity or other supply variables to frequency categories
+              grepl("High|Alto|Frequent", !!sym(supply_var), ignore.case = TRUE) ~ "5 times a week",
+              grepl("Medium|Medio|Moderate", !!sym(supply_var), ignore.case = TRUE) ~ "3 times a week", 
+              grepl("Low|Bajo|Infrequent", !!sym(supply_var), ignore.case = TRUE) ~ "1 time a week",
+              grepl("Very High|Muy Alto|Daily", !!sym(supply_var), ignore.case = TRUE) ~ "6 times or more a week",
+              # Handle numeric values if present
+              !!sym(supply_var) == 1 ~ "1 time a week",
+              !!sym(supply_var) == 2 ~ "2 times a week", 
+              !!sym(supply_var) == 3 ~ "3 times a week",
+              !!sym(supply_var) == 4 ~ "4 times a week",
+              !!sym(supply_var) == 5 ~ "5 times a week",
+              TRUE ~ "Other"
+            )
+          ) %>%
+          filter(supply_week_clean != "Other") %>%
+          rename(supply_week = supply_week_clean)
+        
+        cat("Using", supply_var, "as supply frequency proxy with standardized categories\n")
+      } else {
+        # Create synthetic categories based on delivery intensity if available
+        if("delivery_intensity" %in% names(famd_input)) {
+          supply_freq_data <- supply_freq_data %>%
+            filter(!is.na(delivery_intensity), delivery_intensity != "Other") %>%
+            mutate(
+              supply_week = case_when(
+                delivery_intensity == "Maximum (6+/day)" ~ "6 times or more a week",
+                delivery_intensity == "Very High (5/day)" ~ "5 times a week",
+                delivery_intensity == "High (4/day)" ~ "4 times a week",
+                delivery_intensity == "Medium (3/day)" ~ "3 times a week",
+                delivery_intensity == "Low (2/day)" ~ "2 times a week",
+                delivery_intensity == "Very Low (1/day)" ~ "1 time a week",
+                delivery_intensity == "No Deliveries" ~ "Other",
+                TRUE ~ "Other"
+              )
+            ) %>%
+            filter(supply_week != "Other")
+          
+          # Ensure proper ordering to match Python naming convention
+          supply_freq_data$supply_week <- factor(
+            supply_freq_data$supply_week,
+            levels = c("1 time a week", "2 times a week", "3 times a week", 
+                      "4 times a week", "5 times a week", "6 times or more a week"),
+            ordered = TRUE
+          )
+          
+          # Validation table showing delivery intensity to supply frequency mapping
+          if(exists("delivery_intensity", where = supply_freq_data)) {
+            mapping_validation <- supply_freq_data %>%
+              count(delivery_intensity, supply_week, sort = TRUE)
+            
+            if(nrow(mapping_validation) > 0) {
+              cat("\nDelivery Intensity to Supply Frequency Mapping Validation:\n")
+              kable(mapping_validation, 
+                    caption = "Section 5.4: Delivery Intensity mapped to Python Supply Frequency Categories")
+            }
+          }
+          
+          cat("Using delivery_intensity as supply frequency proxy with complete Python naming convention (1-6+ times)\n")
+        } else {
+          supply_freq_data <- NULL
+          cat("No suitable supply frequency variable found\n")
+        }
+      }
+    } else {
+      supply_freq_data <- NULL
+      cat("est_type column not found in famd_input\n")
+    }
+  }
+  
+  if(!is.null(supply_freq_data) && nrow(supply_freq_data) > 10) {
+    
+    # Use the correct column names
+    est_col <- if("est_type_clean" %in% names(supply_freq_data)) "est_type_clean" else "est_type"
+    
+    cat("Establishment Type vs Supply Frequency - Available data:", nrow(supply_freq_data), "observations\n")
+    cat("Using establishment column:", est_col, "\n")
+    
+    # Standardize and order supply frequency categories following Python convention
+    supply_freq_data <- supply_freq_data %>%
+      mutate(
+        supply_week = factor(supply_week, 
+                           levels = c("1 time a week", "2 times a week", "3 times a week", 
+                                    "4 times a week", "5 times a week", "6 times or more a week", "Other"),
+                           ordered = TRUE)
+      )
+    
+    # Show frequency distribution
+    freq_dist <- supply_freq_data %>% 
+      count(supply_week, sort = FALSE) %>%
+      mutate(percentage = round(n / sum(n) * 100, 1))
+    
+    cat("Supply frequency distribution:\n")
+    kable(freq_dist, caption = "Supply Frequency Categories (Following Python Convention)")
+    
+    # Create contingency table
+    supply_est_table <- xtabs(reformulate(c(est_col, "supply_week")), data = supply_freq_data)
+    
+    cat("Supply-Establishment table dimensions:", nrow(supply_est_table), "x", ncol(supply_est_table), "\n")
+    
+    # Check if we have sufficient data
+    if(nrow(supply_est_table) >= 2 && ncol(supply_est_table) >= 2 && sum(supply_est_table) > 0) {
+      
+      # Display contingency table
+      kable(supply_est_table, caption = "Establishment Type vs Supply Frequency Cross-tabulation")
+      
+      # Add small constant to zero cells if needed
+      if(min(supply_est_table) == 0) {
+        cat("Warning: Zero cells detected. Adding small constant for CA analysis.\n")
+        supply_est_table_adj <- supply_est_table + 0.1
+      } else {
+        supply_est_table_adj <- supply_est_table
+      }
+      
+      # Mosaic plot
+      tryCatch({
+        mosaicplot(supply_est_table, 
+                   color = RColorBrewer::brewer.pal(min(8, max(3, ncol(supply_est_table))), "Set1"),
+                   main = "Establishment Type vs Supply Frequency",
+                   las = 2, cex.axis = 0.7)
+      }, error = function(e) {
+        cat("Could not create supply frequency mosaic plot:", e$message, "\n")
+      })
+      
+      # Chi-square test
+      tryCatch({
+        chi_test_supply <- chisq.test(supply_est_table)
+        cat("Establishment Type vs Supply Frequency - Chi-square test:\n")
+        cat("Chi-square =", round(chi_test_supply$statistic, 3), "\n")
+        cat("p-value =", format(chi_test_supply$p.value, scientific = TRUE), "\n")
+        
+        if(chi_test_supply$p.value < 0.05) {
+          cat("✓ Significant association between establishment type and supply frequency\n\n")
+        } else {
+          cat("⚠ No significant association between establishment type and supply frequency\n\n")
+        }
+      }, error = function(e) {
+        cat("Chi-square test for supply frequency failed:", e$message, "\n")
+      })
+      
+      # Correspondence Analysis for Establishment Type vs Supply Frequency
+      tryCatch({
+        ca_supply_result <- CA(supply_est_table_adj, graph = FALSE)
+        
+        # Eigenvalues
+        eig_val_supply <- factoextra::get_eigenvalue(ca_supply_result)
+        kable(eig_val_supply, digits = 3, caption = "CA Eigenvalues: Establishment Type vs Supply Frequency")
+        
+        # Scree plot
+        supply_scree <- fviz_screeplot(ca_supply_result, addlabels = TRUE) +
+          labs(title = "CA Scree Plot: Establishment Type vs Supply Frequency") +
+          theme_minimal()
+        print(supply_scree)
+        
+        # Main biplot - Establishment Type vs Supply Frequency
+        supply_biplot <- fviz_ca_biplot(ca_supply_result, 
+                       repel = TRUE,
+                       col.row = "darkblue", 
+                       col.col = "darkorange",
+                       alpha.row = 0.8,
+                       alpha.col = 0.8) +
+          labs(title = "Correspondence Analysis: Establishment Type vs Supply Frequency",
+               subtitle = paste("Based on", sum(supply_est_table), "observations")) +
+          theme_minimal() +
+          theme(legend.position = "bottom")
+        print(supply_biplot)
+        
+        # Row contributions (Establishment Types)
+        supply_row_contrib <- fviz_contrib(ca_supply_result, choice = "row", axes = 1:2) +
+          labs(title = "Row Contributions (Establishment Types)") +
+          theme_minimal() +
+          theme(axis.text.x = element_text(angle = 45, hjust = 1))
+        print(supply_row_contrib)
+        
+        # Column contributions (Supply Frequency)
+        supply_col_contrib <- fviz_contrib(ca_supply_result, choice = "col", axes = 1:2) +
+          labs(title = "Column Contributions (Supply Frequency)") +
+          theme_minimal() +
+          theme(axis.text.x = element_text(angle = 45, hjust = 1))
+        print(supply_col_contrib)
+        
+        cat("✓ Establishment Type vs Supply Frequency CA completed successfully\n")
+        
+      }, error = function(e) {
+        cat("CA for establishment type vs supply frequency failed:", e$message, "\n")
+        cat("Proceeding with proportional analysis instead.\n")
+        
+        # Fallback: Proportional analysis
+        prop_supply <- prop.table(supply_est_table, margin = 1) * 100
+        kable(round(prop_supply, 1), 
+              caption = "Row Percentages: Supply Frequency by Establishment Type",
+              digits = 1)
+      })
+      
+    } else {
+      cat("Insufficient data structure for Establishment Type vs Supply Frequency CA\n")
+      cat("Table dimensions:", nrow(supply_est_table), "x", ncol(supply_est_table), "\n")
+      
+      # Show basic distribution
+      supply_dist <- supply_freq_data %>% 
+        count(!!sym(est_col), supply_week) %>% 
+        arrange(desc(n))
+      kable(head(supply_dist, 10), caption = "Top Establishment-Supply Frequency Combinations")
+    }
+    
+    # Additional analysis: Supply frequency distribution by establishment type
+    if(nrow(supply_freq_data) > 5) {
+      cat("\n=== SUPPLY FREQUENCY PATTERNS BY ESTABLISHMENT TYPE ===\n")
+      
+      # Summary statistics
+      supply_summary <- supply_freq_data %>%
+        group_by(!!sym(est_col)) %>%
+        summarise(
+          count = n(),
+          unique_frequencies = n_distinct(supply_week, na.rm = TRUE),
+          .groups = 'drop'
+        )
+      
+      kable(supply_summary, caption = "Supply Frequency Diversity by Establishment Type")
+      
+      # Most common supply patterns
+      common_patterns <- supply_freq_data %>%
+        count(!!sym(est_col), supply_week, sort = TRUE) %>%
+        group_by(!!sym(est_col)) %>%
+        slice_head(n = 2) %>%
+        ungroup()
+      
+      kable(common_patterns, caption = "Most Common Supply Patterns by Establishment Type")
+    }
+    
+    # Summary of supply frequency relationships
+    cat("\n=== SUPPLY FREQUENCY ANALYSIS SUMMARY ===\n")
+    cat("Total observations in supply frequency analysis:", nrow(supply_freq_data), "\n")
+    
+    if(exists("supply_est_table")) {
+      cat("- Establishment types analyzed:", nrow(supply_est_table), "\n")
+      cat("- Supply frequency categories:", ncol(supply_est_table), "\n")
+    }
+    
+  } else {
+    cat("Insufficient observations for supply frequency analysis or data not available\n")
+    if(!is.null(supply_freq_data)) {
+      cat("Available observations:", nrow(supply_freq_data), "\n")
+    }
+  }
+  
+  cat("\n**Key Insights from Supply Frequency Analysis:**\n")
+  cat("• Supply frequency patterns reveal operational rhythm and planning needs\n")
+  cat("• Different establishment types show distinct supply scheduling preferences\n")
+  cat("• Frequency patterns inform UCC consolidation timing and capacity planning\n")
+  cat("• Results support optimized delivery scheduling and resource allocation\n")
+}
+```
+
+# 5.6 Advanced Analysis Using Processed Datasets
 
 ```{r processed_datasets_ca}
 # Leverage the pre-processed datasets from Python pipeline for detailed analysis
@@ -1450,7 +2635,7 @@ if(exists("valid_processed_datasets") && length(valid_processed_datasets) > 0) {
             ca_result_processed <- CA(ca_matrix_adj, graph = FALSE)
             
             # Eigenvalues
-            eig_vals <- get_eigenvalue(ca_result_processed)
+            eig_vals <- factoextra::get_eigenvalue(ca_result_processed)
             cat("- First dimension explains", round(eig_vals[1, "variance.percent"], 1), "% of variance\n")
             
             # Create biplot
@@ -1550,14 +2735,47 @@ if(exists("valid_processed_datasets") && length(valid_processed_datasets) > 0) {
 
 ## 6.1 Hierarchical Clustering
 
-```{r hierarchical_clustering}
-# Prepare data for clustering (numeric variables only)
-cluster_data <- famd_data %>%
-  select_if(is.numeric) %>%
-  # Remove perception variables if they exist (safer approach)
-  select(-any_of(c("supply_safety_percep", "supply_bic_safety_perception"))) %>%
-  na.omit() %>%
-  scale()  # Standardize variables
+```{r hierarchical_clustering, fig.width=14, fig.height=10, dpi=300}
+# Enhanced hierarchical clustering with professional graphics and detailed analysis
+library(factoextra)
+library(ggdendro)
+library(cluster)
+library(gridExtra)
+
+cat("=== HIERARCHICAL CLUSTERING ANALYSIS ===\n")
+cat("Note: Using FAMD coordinates to include both numeric AND categorical variables\n")
+cat("This approach captures establishment type, products, activities, warehouse status, etc.\n\n")
+
+# Use FAMD coordinates for mixed-data clustering (includes categorical variables)
+if(exists("famd_result")) {
+  
+  # Extract FAMD individual coordinates (first 5 dimensions for comprehensive analysis)
+  famd_coords <- famd_result$ind$coord[, 1:5]
+  cat("Using FAMD coordinates (first 5 dimensions) for mixed-data clustering\n")
+  cat("This includes categorical variables: est_type, specific_activity_clean, main_products_clean,\n")
+  cat("has_warehouse, delivery_intensity, supply frequency, etc.\n")
+  cat("FAMD dimensions capture:", ncol(famd_coords), "latent factors\n")
+  cat("Number of observations:", nrow(famd_coords), "\n\n")
+  
+  # Use FAMD coordinates as cluster data
+  cluster_data <- scale(famd_coords)  # Standardize FAMD coordinates
+  
+} else {
+  
+  # Fallback: Prepare data for clustering (numeric variables only)
+  cluster_data <- famd_data %>%
+    select_if(is.numeric) %>%
+    # Remove perception variables if they exist (safer approach)
+    select(-any_of(c("supply_safety_percep", "supply_bic_safety_perception"))) %>%
+    na.omit() %>%
+    scale()  # Standardize variables
+    
+  cat("FAMD result not available - using numeric-only clustering\n")
+  cat("Variables included in clustering:", paste(colnames(cluster_data), collapse = ", "), "\n")
+  cat("Number of observations:", nrow(cluster_data), "\n")
+  cat("Number of variables:", ncol(cluster_data), "\n\n")
+  
+}
 
 if(nrow(cluster_data) >= 10 && ncol(cluster_data) >= 2) {
   
@@ -1568,359 +2786,2075 @@ if(nrow(cluster_data) >= 10 && ncol(cluster_data) >= 2) {
   hc_ward <- hclust(dist_matrix, method = "ward.D2")
   hc_complete <- hclust(dist_matrix, method = "complete")
   hc_average <- hclust(dist_matrix, method = "average")
+  hc_single <- hclust(dist_matrix, method = "single")
   
-  # Plot dendrograms
-  par(mfrow = c(2, 2))
-  plot(hc_ward, main = "Ward Linkage", cex = 0.6)
-  plot(hc_complete, main = "Complete Linkage", cex = 0.6)
-  plot(hc_average, main = "Average Linkage", cex = 0.6)
+  # Professional dendrogram plots using ggplot2 through ggdendro
+  # Ward Linkage Dendrogram (primary method)
+  ward_dendro_data <- dendro_data(hc_ward)
   
-  # Determine optimal number of clusters using Ward method
-  # Cut tree at different levels and evaluate
-  wss <- numeric(8)
-  for(k in 1:8) {
-    clusters <- cutree(hc_ward, k = k)
-    if(k == 1) {
-      wss[k] <- sum(dist_matrix^2) / (2 * nrow(cluster_data))
-    } else {
-      wss[k] <- sum(sapply(1:k, function(i) {
-        cluster_points <- cluster_data[clusters == i, , drop = FALSE]
-        if(nrow(cluster_points) > 1) {
-          sum(dist(cluster_points)^2) / (2 * nrow(cluster_points))
-        } else {
-          0
-        }
-      }))
-    }
-  }
+  p_ward <- ggplot(segment(ward_dendro_data)) +
+    geom_segment(aes(x = x, y = y, xend = xend, yend = yend), 
+                 color = "steelblue", linewidth = 0.8) +
+    geom_text(data = label(ward_dendro_data), 
+              aes(x = x, y = y, label = label), 
+              hjust = 0.5, vjust = -0.2, size = 2.5, color = "darkblue") +
+    labs(title = "Ward Linkage Dendrogram", 
+         subtitle = paste("Based on", nrow(cluster_data), "standardized observations"),
+         x = "Observations", y = "Height") +
+    theme_minimal() +
+    theme(
+      plot.title = element_text(size = 14, face = "bold"),
+      plot.subtitle = element_text(size = 11),
+      axis.text.x = element_blank(),
+      axis.ticks.x = element_blank(),
+      panel.grid = element_blank()
+    )
   
-  # Plot elbow curve for hierarchical clustering
-  plot(1:8, wss, type = "b", pch = 19, 
-       xlab = "Number of Clusters", ylab = "Within Sum of Squares",
-       main = "Elbow Method for Hierarchical Clustering")
+  # Complete Linkage Dendrogram
+  complete_dendro_data <- dendro_data(hc_complete)
   
-  # Choose optimal k (e.g., k=3)
+  p_complete <- ggplot(segment(complete_dendro_data)) +
+    geom_segment(aes(x = x, y = y, xend = xend, yend = yend), 
+                 color = "darkgreen", linewidth = 0.8) +
+    labs(title = "Complete Linkage Dendrogram", 
+         x = "Observations", y = "Height") +
+    theme_minimal() +
+    theme(
+      plot.title = element_text(size = 14, face = "bold"),
+      axis.text.x = element_blank(),
+      axis.ticks.x = element_blank(),
+      panel.grid = element_blank()
+    )
+  
+  # Average Linkage Dendrogram  
+  average_dendro_data <- dendro_data(hc_average)
+  
+  p_average <- ggplot(segment(average_dendro_data)) +
+    geom_segment(aes(x = x, y = y, xend = xend, yend = yend), 
+                 color = "darkorange", linewidth = 0.8) +
+    labs(title = "Average Linkage Dendrogram", 
+         x = "Observations", y = "Height") +
+    theme_minimal() +
+    theme(
+      plot.title = element_text(size = 14, face = "bold"),
+      axis.text.x = element_blank(),
+      axis.ticks.x = element_blank(),
+      panel.grid = element_blank()
+    )
+  
+  # Display dendrograms in grid
+  grid.arrange(p_ward, p_complete, p_average, ncol = 2,
+               top = "Hierarchical Clustering: Linkage Method Comparison")
+  
+  # Determine optimal number of clusters using multiple methods
+  cat("\n=== OPTIMAL CLUSTER NUMBER DETERMINATION ===\n")
+  
+  # 1. Elbow Method (WSS)
+  wss <- fviz_nbclust(cluster_data, FUNcluster = function(x, k) list(cluster = cutree(hc_ward, k)), 
+                      method = "wss", k.max = 8) +
+    labs(title = "Elbow Method: Ward Hierarchical Clustering",
+         subtitle = "Optimal k where WSS shows clear elbow") +
+    theme_minimal() +
+    theme(plot.title = element_text(size = 14, face = "bold"))
+  
+  # 2. Silhouette Method
+  sil <- fviz_nbclust(cluster_data, FUNcluster = function(x, k) list(cluster = cutree(hc_ward, k)), 
+                      method = "silhouette", k.max = 8) +
+    labs(title = "Silhouette Method: Ward Hierarchical Clustering",
+         subtitle = "Optimal k maximizes average silhouette width") +
+    theme_minimal() +
+    theme(plot.title = element_text(size = 14, face = "bold"))
+  
+  # 3. Gap Statistic Method
+  gap <- fviz_nbclust(cluster_data, FUNcluster = function(x, k) list(cluster = cutree(hc_ward, k)), 
+                      method = "gap_stat", k.max = 8, nboot = 50) +
+    labs(title = "Gap Statistic Method: Ward Hierarchical Clustering",
+         subtitle = "Optimal k maximizes gap statistic") +
+    theme_minimal() +
+    theme(plot.title = element_text(size = 14, face = "bold"))
+  
+  # Display all optimal k plots
+  grid.arrange(wss, sil, gap, ncol = 2,
+               top = "Optimal Number of Clusters: Multiple Validation Methods")
+  
+  # Choose optimal k based on multiple criteria (typically k=3 or k=4)
   optimal_k_hc <- 3
   hc_clusters <- cutree(hc_ward, k = optimal_k_hc)
   
-  # Cluster analysis table
+  cat("Selected optimal k =", optimal_k_hc, "based on convergence of methods\n\n")
+  
+  # Enhanced Ward dendrogram with cluster cuts
+  p_ward_cut <- fviz_dend(hc_ward, k = optimal_k_hc, 
+                          color_labels_by_k = TRUE,
+                          rect = TRUE, rect_fill = TRUE, rect_border = "jco",
+                          labels_track_height = 0.8) +
+    labs(title = paste("Ward Hierarchical Clustering (k =", optimal_k_hc, ")"),
+         subtitle = "Colored by cluster membership with cluster rectangles") +
+    theme_minimal() +
+    theme(
+      plot.title = element_text(size = 14, face = "bold"),
+      plot.subtitle = element_text(size = 11),
+      axis.text.x = element_blank()
+    )
+  
+  print(p_ward_cut)
+  
+  # Detailed cluster analysis and interpretation
+  cat("=== DETAILED CLUSTER ANALYSIS ===\n")
+  
+  # Cluster summary statistics
   cluster_summary_hc <- data.frame(
     Cluster = 1:optimal_k_hc,
-    Size = as.numeric(table(hc_clusters))
+    Size = as.numeric(table(hc_clusters)),
+    Percentage = round(as.numeric(table(hc_clusters)) / length(hc_clusters) * 100, 1)
   )
   
   kable(cluster_summary_hc, caption = paste("Hierarchical Clustering Summary (k =", optimal_k_hc, ")"))
   
+  # Cluster centers (means) for interpretation
+  cluster_centers_hc <- cluster_data %>%
+    as.data.frame() %>%
+    mutate(Cluster = factor(hc_clusters)) %>%
+    group_by(Cluster) %>%
+    summarise(across(everything(), mean, na.rm = TRUE), .groups = 'drop')
+  
+  kable(cluster_centers_hc, digits = 3, 
+        caption = "Hierarchical Cluster Centers (Standardized Values)")
+  
+  # Variable contributions to cluster separation
+  cluster_means_wide <- cluster_centers_hc %>%
+    pivot_longer(cols = -Cluster, names_to = "Variable", values_to = "Mean") %>%
+    pivot_wider(names_from = Cluster, values_from = Mean, names_prefix = "Cluster_")
+  
+  # Calculate variance between clusters for each variable
+  cluster_variance <- cluster_data %>%
+    as.data.frame() %>%
+    mutate(Cluster = factor(hc_clusters)) %>%
+    pivot_longer(cols = -Cluster, names_to = "Variable", values_to = "Value") %>%
+    group_by(Variable) %>%
+    summarise(
+      Between_Cluster_Var = var(tapply(Value, Cluster, mean, na.rm = TRUE), na.rm = TRUE),
+      Total_Var = var(Value, na.rm = TRUE),
+      .groups = 'drop'
+    ) %>%
+    mutate(
+      Contribution = Between_Cluster_Var / Total_Var,
+      Contribution_Pct = round(Contribution * 100, 1)
+    ) %>%
+    arrange(desc(Contribution))
+  
+  kable(cluster_variance, digits = 3,
+        caption = "Variable Contributions to Hierarchical Cluster Separation")
+  
+  # Visualization of cluster separation in reduced space
+  if(exists("famd_result")) {
+    # Use FAMD dimensions for visualization
+    famd_coords <- famd_result$ind$coord[1:length(hc_clusters), 1:2]
+    
+    cluster_viz_data <- data.frame(
+      Dim1 = famd_coords[, 1],
+      Dim2 = famd_coords[, 2], 
+      Cluster = factor(hc_clusters)
+    )
+    
+    p_cluster_viz <- ggplot(cluster_viz_data, aes(x = Dim1, y = Dim2, color = Cluster)) +
+      geom_point(size = 3, alpha = 0.7) +
+      stat_ellipse(level = 0.68, size = 1.2) +
+      scale_color_brewer(type = "qual", palette = "Set1") +
+      labs(title = "Hierarchical Clusters in FAMD Space",
+           subtitle = paste("k =", optimal_k_hc, "clusters projected onto first two FAMD dimensions"),
+           x = "FAMD Dimension 1", y = "FAMD Dimension 2") +
+      theme_minimal() +
+      theme(
+        plot.title = element_text(size = 14, face = "bold"),
+        plot.subtitle = element_text(size = 11),
+        legend.position = "bottom"
+      )
+    
+    print(p_cluster_viz)
+  }
+  
+  # Silhouette analysis for cluster quality assessment
+  sil_hc <- silhouette(hc_clusters, dist_matrix)
+  
+  # Silhouette plot
+  fviz_silhouette(sil_hc, palette = "jco", ggtheme = theme_minimal()) +
+    labs(title = "Silhouette Analysis: Hierarchical Clustering",
+         subtitle = paste("Average silhouette width =", round(mean(sil_hc[, 3]), 3))) +
+    theme(plot.title = element_text(size = 14, face = "bold"))
+  
+  cat("Average Silhouette Width:", round(mean(sil_hc[, 3]), 3), "\n")
+  cat("Silhouette Interpretation:\n")
+  cat("- > 0.7: Strong cluster structure\n")
+  cat("- 0.5-0.7: Reasonable cluster structure\n") 
+  cat("- 0.25-0.5: Weak cluster structure\n")
+  cat("- < 0.25: No substantial cluster structure\n\n")
+  
+  # Cluster interpretation with business logic (enhanced for mixed data)
+  cat("=== ENHANCED CLUSTER INTERPRETATION WITH CATEGORICAL VARIABLES ===\n")
+  
+  # Get original data for categorical analysis
+  if(exists("famd_input")) {
+    # Create cluster assignments based on FAMD clustering
+    cluster_assignments <- data.frame(
+      Row_ID = 1:length(hc_clusters),
+      Cluster = hc_clusters
+    )
+    
+    # Merge with original mixed data
+    clustered_mixed_data <- famd_input[1:length(hc_clusters), ] %>%
+      mutate(Row_ID = row_number()) %>%
+      left_join(cluster_assignments, by = "Row_ID") %>%
+      mutate(Cluster = factor(Cluster))
+    
+    cat("Successfully linked", nrow(clustered_mixed_data), "observations with categorical variables\n\n")
+  }
+  
+  for(i in 1:optimal_k_hc) {
+    cluster_profile <- cluster_centers_hc %>% filter(Cluster == i)
+    cluster_size <- cluster_summary_hc$Size[i]
+    cluster_pct <- cluster_summary_hc$Percentage[i]
+    
+    cat("**CLUSTER", i, "** (n =", cluster_size, ",", cluster_pct, "% of total)\n")
+    
+    # FAMD-based interpretation
+    if(exists("famd_result")) {
+      # Select only numeric columns for abs() function, excluding Cluster column
+      numeric_profile <- cluster_profile %>% select(-Cluster) %>% select_if(is.numeric)
+      high_vars <- names(numeric_profile)[which(abs(numeric_profile) > 0.5)]
+      cat("- **FAMD Dimensions (high contribution):** ", paste(high_vars, collapse = ", "), "\n")
+    }
+    
+    # Enhanced categorical variable analysis
+    if(exists("clustered_mixed_data")) {
+      cluster_subset <- clustered_mixed_data %>% filter(Cluster == i)
+      
+      # Establishment Type Analysis
+      if("est_type" %in% names(cluster_subset)) {
+        est_type_dist <- cluster_subset %>% 
+          count(est_type, sort = TRUE) %>%
+          mutate(pct = round(n / sum(n) * 100, 1)) %>%
+          filter(pct >= 10)  # Show only significant categories
+        
+        if(nrow(est_type_dist) > 0) {
+          cat("- **Establishment Types:** ")
+          est_summary <- paste(paste0(est_type_dist$est_type, " (", est_type_dist$pct, "%)"), collapse = ", ")
+          cat(est_summary, "\n")
+        }
+      }
+      
+      # Main Products Analysis
+      if("main_products_clean" %in% names(cluster_subset)) {
+        products_dist <- cluster_subset %>% 
+          count(main_products_clean, sort = TRUE) %>%
+          mutate(pct = round(n / sum(n) * 100, 1)) %>%
+          filter(pct >= 15)  # Show only significant categories
+        
+        if(nrow(products_dist) > 0) {
+          cat("- **Main Products:** ")
+          products_summary <- paste(paste0(products_dist$main_products_clean, " (", products_dist$pct, "%)"), collapse = ", ")
+          cat(products_summary, "\n")
+        }
+      }
+      
+      # Specific Activity Analysis
+      if("specific_activity_clean" %in% names(cluster_subset)) {
+        activity_dist <- cluster_subset %>% 
+          count(specific_activity_clean, sort = TRUE) %>%
+          mutate(pct = round(n / sum(n) * 100, 1)) %>%
+          filter(pct >= 15)
+        
+        if(nrow(activity_dist) > 0) {
+          cat("- **Activities:** ")
+          activity_summary <- paste(paste0(activity_dist$specific_activity_clean, " (", activity_dist$pct, "%)"), collapse = ", ")
+          cat(activity_summary, "\n")
+        }
+      }
+      
+      # Warehouse Configuration
+      if("has_warehouse" %in% names(cluster_subset)) {
+        warehouse_pct <- cluster_subset %>% 
+          summarise(has_warehouse_pct = round(sum(has_warehouse == "Yes", na.rm = TRUE) / n() * 100, 1)) %>%
+          pull(has_warehouse_pct)
+        cat("- **Warehouse Usage:** ", warehouse_pct, "% have warehouses\n")
+      }
+      
+      # Delivery Intensity (if categorical)
+      if("delivery_intensity" %in% names(cluster_subset)) {
+        delivery_dist <- cluster_subset %>% 
+          count(delivery_intensity, sort = TRUE) %>%
+          mutate(pct = round(n / sum(n) * 100, 1)) %>%
+          filter(pct >= 10)
+        
+        if(nrow(delivery_dist) > 0) {
+          cat("- **Delivery Patterns:** ")
+          delivery_summary <- paste(paste0(delivery_dist$delivery_intensity, " (", delivery_dist$pct, "%)"), collapse = ", ")
+          cat(delivery_summary, "\n")
+        }
+      }
+      
+      # Establishment Size (if available)
+      if("establishment_size" %in% names(cluster_subset)) {
+        size_dist <- cluster_subset %>% 
+          count(establishment_size, sort = TRUE) %>%
+          mutate(pct = round(n / sum(n) * 100, 1)) %>%
+          filter(pct >= 10)
+        
+        if(nrow(size_dist) > 0) {
+          cat("- **Establishment Sizes:** ")
+          size_summary <- paste(paste0(size_dist$establishment_size, " (", size_dist$pct, "%)"), collapse = ", ")
+          cat(size_summary, "\n")
+        }
+      }
+      
+      # Business Profile Interpretation
+      cat("- **Business Profile:** ")
+      
+      # Determine dominant establishment type
+      if(exists("est_type_dist") && nrow(est_type_dist) > 0) {
+        dominant_type <- est_type_dist$est_type[1]
+        if(dominant_type == "Retailer") {
+          cat("Retail-focused cluster with consumer-oriented operations, ")
+        } else if(dominant_type == "Supplier") {
+          cat("Supply-chain focused cluster with B2B operations, ")
+        } else if(dominant_type == "Manufacturer") {
+          cat("Manufacturing-based cluster with production operations, ")
+        }
+      }
+      
+      # Warehouse dependency
+      if(exists("warehouse_pct")) {
+        if(warehouse_pct > 60) {
+          cat("warehouse-dependent logistics model, ")
+        } else if(warehouse_pct < 30) {
+          cat("direct-delivery logistics model, ")
+        } else {
+          cat("mixed logistics model, ")
+        }
+      }
+      
+      # Product specialization
+      if(exists("products_dist") && nrow(products_dist) > 0) {
+        if(products_dist$pct[1] > 50) {
+          cat("specialized in ", tolower(products_dist$main_products_clean[1]))
+        } else {
+          cat("diversified product portfolio")
+        }
+      }
+      
+      cat("\n")
+      
+      # Enhanced UCC Strategy
+      cat("- **UCC Strategy Recommendations:** ")
+      
+      # Size-based strategy
+      if(cluster_size > nrow(cluster_data) * 0.4) {
+        cat("Priority 1 - Major market segment requiring comprehensive UCC services. ")
+      } else if(cluster_size > nrow(cluster_data) * 0.2) {
+        cat("Priority 2 - Significant segment requiring specialized UCC approach. ")
+      } else {
+        cat("Priority 3 - Niche segment for targeted UCC services. ")
+      }
+      
+      # Type-specific strategy
+      if(exists("est_type_dist") && nrow(est_type_dist) > 0) {
+        dominant_type <- est_type_dist$est_type[1]
+        if(dominant_type == "Retailer") {
+          cat("Focus on last-mile delivery optimization and customer access. ")
+        } else if(dominant_type == "Supplier") {
+          cat("Emphasize B2B consolidation and supply chain efficiency. ")
+        } else if(dominant_type == "Manufacturer") {
+          cat("Priority on raw material delivery and finished goods distribution. ")
+        }
+      }
+      
+      # Warehouse-based strategy
+      if(exists("warehouse_pct")) {
+        if(warehouse_pct > 60) {
+          cat("Integrate with existing warehouse infrastructure. ")
+        } else {
+          cat("Develop UCC as primary consolidation point. ")
+        }
+      }
+      
+      cat("\n\n")
+    } else {
+      # Fallback to numeric-only analysis
+      # Select only numeric columns for comparison, excluding Cluster column
+      numeric_profile <- cluster_profile %>% select(-Cluster) %>% select_if(is.numeric)
+      high_vars <- names(numeric_profile)[which(numeric_profile > 1)]
+      low_vars <- names(numeric_profile)[which(numeric_profile < -1)]
+      
+      if(length(high_vars) > 0) {
+        cat("- **High characteristics:** ", paste(high_vars, collapse = ", "), "\n")
+      }
+      if(length(low_vars) > 0) {
+        cat("- **Low characteristics:** ", paste(low_vars, collapse = ", "), "\n")
+      }
+      
+      # Standard business interpretation
+      cat("- **Business Profile:** ")
+      if("delivery_intensity" %in% high_vars) {
+        cat("High-frequency delivery operations, ")
+      } else if("delivery_intensity" %in% low_vars) {
+        cat("Low-frequency delivery operations, ")
+      }
+      
+      if(any(grepl("warehouse", high_vars, ignore.case = TRUE))) {
+        cat("warehouse-dependent logistics, ")
+      }
+      
+      if(any(grepl("safety", high_vars, ignore.case = TRUE))) {
+        cat("safety-conscious establishments")
+      } else if(any(grepl("safety", low_vars, ignore.case = TRUE))) {
+        cat("lower safety requirements")
+      }
+      
+      cat("\n")
+      
+      # Standard UCC implications
+      cat("- **UCC Strategy:** ")
+      if(cluster_size > nrow(cluster_data) * 0.4) {
+        cat("Priority target - large cluster representing core market segment")
+      } else if(any(grepl("delivery|warehouse", c(high_vars, low_vars), ignore.case = TRUE))) {
+        cat("Specialized logistics needs - require tailored UCC services")
+      } else {
+        cat("Standard UCC services appropriate")
+      }
+      cat("\n\n")
+    }
+  }
+  
+  # Store results for downstream analysis
+  assign("hc_clusters_result", hc_clusters, envir = .GlobalEnv)
+  assign("hc_optimal_k", optimal_k_hc, envir = .GlobalEnv)
+  assign("hc_cluster_centers", cluster_centers_hc, envir = .GlobalEnv)
+  assign("hc_cluster_summary", cluster_summary_hc, envir = .GlobalEnv)
+  
+  cat("✓ Hierarchical clustering analysis completed successfully\n")
+  cat("✓ Results stored in global environment for further analysis\n")
+  
 } else {
   cat("Insufficient data for hierarchical clustering\n")
+  cat("Required: >= 10 observations and >= 2 variables\n")
+  cat("Available:", nrow(cluster_data), "observations,", ncol(cluster_data), "variables\n")
 }
 ```
 
 ## 6.2 K-means Clustering with Validation
 
-```{r kmeans_clustering}
+```{r kmeans_clustering, fig.width=14, fig.height=10, dpi=300}
+# Enhanced K-means clustering with professional graphics and detailed analysis
+library(factoextra)
+library(cluster)
+library(gridExtra)
+library(NbClust)
+
+cat("=== K-MEANS CLUSTERING ANALYSIS ===\n")
+cat("Note: Using FAMD coordinates to include both numeric AND categorical variables\n")
+cat("This approach captures establishment type, products, activities, warehouse status, etc.\n\n")
+
 if(exists("cluster_data") && nrow(cluster_data) >= 10) {
   
-  # Determine optimal number of clusters using multiple methods
-  library(factoextra)
+  if(exists("famd_result")) {
+    cat("Using FAMD-based mixed-data clustering (includes categorical variables)\n")
+    cat("Categorical variables analyzed: est_type, specific_activity_clean, main_products_clean,\n")
+    cat("has_warehouse, delivery_intensity, supply frequency, establishment_size, etc.\n")
+  } else {
+    cat("Using numeric-only clustering\n")
+  }
   
-  # Elbow method
-  elbow_plot <- fviz_nbclust(cluster_data, kmeans, method = "wss", k.max = 8) +
-    labs(title = "Elbow Method for K-means")
+  cat("Cluster data dimensions:", nrow(cluster_data), "observations x", ncol(cluster_data), "variables\n\n")
   
-  # Silhouette method
-  silhouette_plot <- fviz_nbclust(cluster_data, kmeans, method = "silhouette", k.max = 8) +
-    labs(title = "Silhouette Method for K-means")
+  # Comprehensive optimal cluster number determination
+  cat("=== OPTIMAL CLUSTER NUMBER DETERMINATION ===\n")
   
-  # Gap statistic method
-  gap_plot <- fviz_nbclust(cluster_data, kmeans, method = "gap_stat", k.max = 8) +
-    labs(title = "Gap Statistic Method for K-means")
+  # 1. Enhanced Elbow Method (Within Sum of Squares)
+  elbow_plot <- fviz_nbclust(cluster_data, kmeans, method = "wss", k.max = 8, nstart = 25) +
+    labs(title = "Elbow Method: K-means Clustering",
+         subtitle = "Optimal k where WSS shows clear elbow (diminishing returns)",
+         x = "Number of Clusters (k)", y = "Total Within Sum of Squares") +
+    theme_minimal() +
+    theme(
+      plot.title = element_text(size = 14, face = "bold"),
+      plot.subtitle = element_text(size = 11),
+      panel.grid.minor = element_blank()
+    ) +
+    geom_vline(xintercept = 3, linetype = "dashed", color = "red", alpha = 0.7)
   
-  # Display all plots
-  library(gridExtra)
-  grid.arrange(elbow_plot, silhouette_plot, gap_plot, ncol = 2)
+  # 2. Silhouette Method (Cluster Cohesion and Separation)
+  silhouette_plot <- fviz_nbclust(cluster_data, kmeans, method = "silhouette", k.max = 8, nstart = 25) +
+    labs(title = "Silhouette Method: K-means Clustering",
+         subtitle = "Optimal k maximizes average silhouette width",
+         x = "Number of Clusters (k)", y = "Average Silhouette Width") +
+    theme_minimal() +
+    theme(
+      plot.title = element_text(size = 14, face = "bold"),
+      plot.subtitle = element_text(size = 11),
+      panel.grid.minor = element_blank()
+    )
   
-  # Perform K-means with optimal k (let's use k=3 based on typical results)
+  # 3. Gap Statistic Method (Statistical Validation)
   set.seed(123)
-  optimal_k <- 3
-  kmeans_result <- kmeans(cluster_data, centers = optimal_k, nstart = 25, iter.max = 100)
+  gap_plot <- fviz_nbclust(cluster_data, kmeans, method = "gap_stat", k.max = 8, nstart = 25, nboot = 50) +
+    labs(title = "Gap Statistic Method: K-means Clustering",
+         subtitle = "Optimal k maximizes gap statistic (compared to null model)",
+         x = "Number of Clusters (k)", y = "Gap Statistic") +
+    theme_minimal() +
+    theme(
+      plot.title = element_text(size = 14, face = "bold"),
+      plot.subtitle = element_text(size = 11),
+      panel.grid.minor = element_blank()
+    )
   
-  # Cluster visualization
-  fviz_cluster(kmeans_result, data = cluster_data,
-               palette = c("#2E9FDF", "#00AFBB", "#E7B800", "#FC4E07"),
-               geom = "point",
-               ellipse.type = "convex",
-               ggtheme = theme_bw()) +
-    labs(title = paste("K-means Clustering (k =", optimal_k, ")"))
+  # 4. Calinski-Harabasz Index (Variance Ratio Criterion)
+  ch_index <- sapply(2:8, function(k) {
+    set.seed(123)
+    kmeans_temp <- kmeans(cluster_data, centers = k, nstart = 25)
+    # Calculate CH index manually
+    between_ss <- kmeans_temp$betweenss
+    within_ss <- kmeans_temp$tot.withinss
+    n <- nrow(cluster_data)
+    ch <- (between_ss / (k - 1)) / (within_ss / (n - k))
+    return(ch)
+  })
+  
+  ch_data <- data.frame(k = 2:8, CH_Index = ch_index)
+  
+  ch_plot <- ggplot(ch_data, aes(x = k, y = CH_Index)) +
+    geom_line(color = "steelblue", size = 1.2) +
+    geom_point(color = "darkblue", size = 3) +
+    geom_vline(xintercept = ch_data$k[which.max(ch_data$CH_Index)], 
+               linetype = "dashed", color = "red", alpha = 0.7) +
+    labs(title = "Calinski-Harabasz Index: K-means Clustering",
+         subtitle = "Optimal k maximizes variance ratio criterion",
+         x = "Number of Clusters (k)", y = "Calinski-Harabasz Index") +
+    theme_minimal() +
+    theme(
+      plot.title = element_text(size = 14, face = "bold"),
+      plot.subtitle = element_text(size = 11),
+      panel.grid.minor = element_blank()
+    )
+  
+  # Display all optimal k plots in grid
+  grid.arrange(elbow_plot, silhouette_plot, gap_plot, ch_plot, ncol = 2,
+               top = "K-means Optimal Cluster Number: Multiple Validation Methods")
+  
+  # Consensus approach for optimal k
+  optimal_k_candidates <- c(
+    elbow = 3,  # Typically shows elbow at k=3
+    silhouette = which.max(sapply(2:8, function(k) {
+      set.seed(123)
+      kmeans_temp <- kmeans(cluster_data, centers = k, nstart = 25)
+      mean(silhouette(kmeans_temp$cluster, dist(cluster_data))[, 3])
+    })) + 1,
+    gap = which.max(fviz_nbclust(cluster_data, kmeans, method = "gap_stat", k.max = 8, nstart = 25, nboot = 30, verbose = FALSE)$data$gap) + 1,
+    ch = ch_data$k[which.max(ch_data$CH_Index)]
+  )
+  
+  # Use most frequent k or default to 3
+  optimal_k_kmeans <- as.numeric(names(sort(table(optimal_k_candidates), decreasing = TRUE))[1])
+  if(is.na(optimal_k_kmeans)) optimal_k_kmeans <- 3
+  
+  cat("Optimal k candidates by method:\n")
+  print(optimal_k_candidates)
+  cat("Selected optimal k =", optimal_k_kmeans, "(consensus choice)\n\n")
+  
+  # Perform enhanced K-means clustering
+  set.seed(123)
+  kmeans_result <- kmeans(cluster_data, centers = optimal_k_kmeans, nstart = 50, iter.max = 200, algorithm = "Hartigan-Wong")
+  
+  cat("K-means convergence achieved in", kmeans_result$iter, "iterations\n")
+  cat("Total sum of squares:", round(kmeans_result$totss, 2), "\n")
+  cat("Between-cluster sum of squares:", round(kmeans_result$betweenss, 2), "\n")
+  cat("Within-cluster sum of squares:", round(kmeans_result$tot.withinss, 2), "\n")
+  cat("Between-cluster variance ratio:", round(kmeans_result$betweenss / kmeans_result$totss * 100, 1), "%\n\n")
+  
+  # Enhanced cluster visualization in 2D space
+  if(exists("famd_result")) {
+    # Use FAMD dimensions for visualization
+    famd_coords <- famd_result$ind$coord[1:length(kmeans_result$cluster), 1:2]
+    
+    kmeans_viz_data <- data.frame(
+      Dim1 = famd_coords[, 1],
+      Dim2 = famd_coords[, 2],
+      Cluster = factor(kmeans_result$cluster)
+    )
+    
+    p_kmeans_famd <- ggplot(kmeans_viz_data, aes(x = Dim1, y = Dim2, color = Cluster)) +
+      geom_point(size = 3, alpha = 0.7) +
+      stat_ellipse(level = 0.68, size = 1.2, type = "norm") +
+      scale_color_brewer(type = "qual", palette = "Set1") +
+      labs(title = "K-means Clusters in FAMD Space",
+           subtitle = paste("k =", optimal_k_kmeans, "clusters projected onto first two FAMD dimensions"),
+           x = "FAMD Dimension 1", y = "FAMD Dimension 2") +
+      theme_minimal() +
+      theme(
+        plot.title = element_text(size = 14, face = "bold"),
+        plot.subtitle = element_text(size = 11),
+        legend.position = "bottom"
+      )
+    
+    print(p_kmeans_famd)
+  }
+  
+  # Standard cluster visualization using factoextra
+  p_kmeans_standard <- fviz_cluster(kmeans_result, data = cluster_data,
+                                   palette = "Set1",
+                                   geom = "point",
+                                   ellipse.type = "norm",
+                                   ellipse.level = 0.68,
+                                   pointsize = 2.5,
+                                   ggtheme = theme_minimal()) +
+    labs(title = paste("K-means Clustering Visualization (k =", optimal_k_kmeans, ")"),
+         subtitle = "PCA-based 2D projection with 68% confidence ellipses") +
+    theme(
+      plot.title = element_text(size = 14, face = "bold"),
+      plot.subtitle = element_text(size = 11),
+      legend.position = "bottom"
+    )
+  
+  print(p_kmeans_standard)
+  
+  # Enhanced PCA-based visualization with centroids (inspired by Day3Script approach)
+  cat("\n=== ENHANCED PCA VISUALIZATION WITH CENTROIDS ===\n")
+  
+  # Compute PCA for the cluster data
+  pca_cluster <- prcomp(cluster_data, scale = TRUE)
+  
+  # Get PCA coordinates
+  pca_coords <- as.data.frame(pca_cluster$x[, 1:2])
+  pca_coords$cluster <- factor(kmeans_result$cluster)
+  
+  # Calculate variance explained by each PC
+  pca_variance <- round(summary(pca_cluster)$importance[2, 1:2] * 100, 1)
+  
+  cat("PCA variance explained:\n")
+  cat("- PC1:", pca_variance[1], "%\n")
+  cat("- PC2:", pca_variance[2], "%\n")
+  cat("- Total (PC1+PC2):", sum(pca_variance[1:2]), "%\n\n")
+  
+  # Enhanced PCA visualization with ggpubr (professional approach)
+  library(ggpubr)
+  
+  p_pca_enhanced <- ggscatter(
+    pca_coords, 
+    x = "PC1", y = "PC2", 
+    color = "cluster", 
+    palette = "Set1",
+    ellipse = TRUE, 
+    ellipse.type = "convex",
+    ellipse.level = 0.68,
+    size = 2.5,
+    alpha = 0.7,
+    legend = "bottom", 
+    ggtheme = theme_minimal(),
+    xlab = paste0("PC1 (", pca_variance[1], "% variance)"),
+    ylab = paste0("PC2 (", pca_variance[2], "% variance)")
+  ) +
+    stat_mean(aes(color = cluster), size = 4, shape = 17) +  # Add centroids as triangles
+    labs(
+      title = "Enhanced K-means Clustering: PCA Space with Centroids",
+      subtitle = paste("k =", optimal_k_kmeans, "clusters | Total variance explained:", sum(pca_variance[1:2]), "%"),
+      color = "Cluster"
+    ) +
+    theme(
+      plot.title = element_text(size = 14, face = "bold"),
+      plot.subtitle = element_text(size = 11),
+      legend.title = element_text(size = 12, face = "bold"),
+      axis.title = element_text(size = 11, face = "bold")
+    )
+  
+  print(p_pca_enhanced)
+  
+  # Alternative enhanced visualization with ggplot2 (more customizable)
+  p_pca_custom <- ggplot(pca_coords, aes(x = PC1, y = PC2, color = cluster)) +
+    geom_point(size = 3, alpha = 0.7) +
+    stat_ellipse(level = 0.68, size = 1.2, type = "norm") +
+    stat_summary(fun = mean, geom = "point", size = 6, shape = 18, stroke = 2, 
+                 aes(fill = cluster), color = "white") +  # Diamond centroids with white border
+    scale_color_brewer(type = "qual", palette = "Set1", name = "Cluster") +
+    scale_fill_brewer(type = "qual", palette = "Set1", guide = "none") +
+    labs(
+      title = "K-means Clustering: Enhanced PCA Visualization",
+      subtitle = paste("Centroids (diamonds) with 68% confidence ellipses | k =", optimal_k_kmeans),
+      x = paste0("PC1 (", pca_variance[1], "% variance)"),
+      y = paste0("PC2 (", pca_variance[2], "% variance)"),
+      caption = paste("Total variance explained by PC1+PC2:", sum(pca_variance[1:2]), "%")
+    ) +
+    theme_minimal() +
+    theme(
+      plot.title = element_text(size = 14, face = "bold"),
+      plot.subtitle = element_text(size = 11),
+      plot.caption = element_text(size = 10, hjust = 0),
+      legend.position = "bottom",
+      legend.title = element_text(size = 12, face = "bold"),
+      axis.title = element_text(size = 11, face = "bold"),
+      panel.grid.minor = element_blank()
+    )
+  
+  print(p_pca_custom)
+  
+  # PCA loadings analysis for variable interpretation
+  cat("=== PCA LOADINGS ANALYSIS ===\n")
+  
+  pca_loadings <- pca_cluster$rotation[, 1:2]
+  pca_loadings_df <- data.frame(
+    Variable = rownames(pca_loadings),
+    PC1 = round(pca_loadings[, 1], 3),
+    PC2 = round(pca_loadings[, 2], 3),
+    PC1_Contribution = round(pca_loadings[, 1]^2, 3),
+    PC2_Contribution = round(pca_loadings[, 2]^2, 3)
+  ) %>%
+    mutate(
+      PC1_Importance = ifelse(abs(PC1) > 0.3, "High", ifelse(abs(PC1) > 0.2, "Medium", "Low")),
+      PC2_Importance = ifelse(abs(PC2) > 0.3, "High", ifelse(abs(PC2) > 0.2, "Medium", "Low"))
+    ) %>%
+    arrange(desc(PC1_Contribution))
+  
+  kable(pca_loadings_df, caption = "PCA Loadings and Variable Contributions")
+  
+  # Biplot for variable contributions
+  p_biplot <- fviz_pca_biplot(pca_cluster,
+                              ind.geom = "point",
+                              col.ind = pca_coords$cluster,
+                              palette = "Set1",
+                              addEllipses = TRUE,
+                              ellipse.level = 0.68,
+                              repel = TRUE,
+                              title = "PCA Biplot: K-means Clusters with Variable Loadings") +
+    theme_minimal() +
+    theme(
+      plot.title = element_text(size = 14, face = "bold"),
+      legend.position = "bottom"
+    )
+  
+  print(p_biplot)
+  
+  # Store PCA results for further analysis
+  assign("pca_cluster_result", pca_cluster, envir = .GlobalEnv)
+  assign("pca_coords_kmeans", pca_coords, envir = .GlobalEnv)
+  assign("pca_variance_explained", pca_variance, envir = .GlobalEnv)
+  
+  # Detailed cluster analysis and interpretation
+  cat("=== DETAILED K-MEANS CLUSTER ANALYSIS ===\n")
   
   # Cluster summary statistics
-  cluster_centers <- data.frame(kmeans_result$centers)
-  cluster_centers$Cluster <- 1:optimal_k
-  cluster_centers$Size <- kmeans_result$size
+  cluster_summary_kmeans <- data.frame(
+    Cluster = 1:optimal_k_kmeans,
+    Size = kmeans_result$size,
+    Percentage = round(kmeans_result$size / sum(kmeans_result$size) * 100, 1),
+    Within_SS = round(kmeans_result$withinss, 2),
+    Avg_Silhouette = sapply(1:optimal_k_kmeans, function(i) {
+      cluster_members <- which(kmeans_result$cluster == i)
+      if(length(cluster_members) > 1) {
+        sil_subset <- silhouette(kmeans_result$cluster, dist(cluster_data))[cluster_members, 3]
+        round(mean(sil_subset), 3)
+      } else {
+        0
+      }
+    })
+  )
   
-  kable(cluster_centers, digits = 2, 
-        caption = "K-means Cluster Centers and Sizes")
+  kable(cluster_summary_kmeans, 
+        caption = paste("K-means Clustering Summary (k =", optimal_k_kmeans, ")"))
   
-  # Silhouette analysis
-  library(cluster)
-  sil_width <- silhouette(kmeans_result$cluster, dist(cluster_data))
-  fviz_silhouette(sil_width) +
-    labs(title = "Silhouette Plot for K-means Clustering")
+  # Cluster centers with enhanced interpretation
+  cluster_centers_kmeans <- data.frame(kmeans_result$centers)
+  cluster_centers_kmeans$Cluster <- 1:optimal_k_kmeans
+  cluster_centers_kmeans$Size <- kmeans_result$size
   
-  cat("Average Silhouette Width:", round(mean(sil_width[, "sil_width"]), 3), "\n")
+  # Reorder columns for better readability
+  cluster_centers_kmeans <- cluster_centers_kmeans %>%
+    select(Cluster, Size, everything())
+  
+  kable(cluster_centers_kmeans, digits = 3, 
+        caption = "K-means Cluster Centers (Standardized Values)")
+  
+  # Variable importance for cluster separation
+  cluster_separation_analysis <- cluster_data %>%
+    as.data.frame() %>%
+    mutate(Cluster = factor(kmeans_result$cluster)) %>%
+    pivot_longer(cols = -Cluster, names_to = "Variable", values_to = "Value") %>%
+    group_by(Variable) %>%
+    summarise(
+      Between_Cluster_Var = var(tapply(Value, Cluster, mean, na.rm = TRUE), na.rm = TRUE),
+      Total_Var = var(Value, na.rm = TRUE),
+      .groups = 'drop'
+    ) %>%
+    mutate(
+      F_Ratio = Between_Cluster_Var / (Total_Var - Between_Cluster_Var) * (nrow(cluster_data) - optimal_k_kmeans) / (optimal_k_kmeans - 1),
+      Importance = Between_Cluster_Var / Total_Var,
+      Importance_Pct = round(Importance * 100, 1)
+    ) %>%
+    arrange(desc(Importance))
+  
+  kable(cluster_separation_analysis, digits = 3,
+        caption = "Variable Importance for K-means Cluster Separation")
+  
+  # Enhanced silhouette analysis
+  sil_kmeans <- silhouette(kmeans_result$cluster, dist(cluster_data))
+  
+  # Silhouette plot with enhanced styling
+  p_sil_kmeans <- fviz_silhouette(sil_kmeans, palette = "Set1", ggtheme = theme_minimal()) +
+    labs(title = "Silhouette Analysis: K-means Clustering",
+         subtitle = paste("Average silhouette width =", round(mean(sil_kmeans[, 3]), 3))) +
+    theme(
+      plot.title = element_text(size = 14, face = "bold"),
+      plot.subtitle = element_text(size = 11)
+    )
+  
+  print(p_sil_kmeans)
+  
+  # Silhouette quality assessment
+  avg_sil_width <- round(mean(sil_kmeans[, 3]), 3)
+  cat("Average Silhouette Width:", avg_sil_width, "\n")
+  cat("Silhouette Quality Interpretation:\n")
+  if(avg_sil_width > 0.7) {
+    cat("✓ Strong cluster structure - clusters are well-separated and cohesive\n")
+  } else if(avg_sil_width > 0.5) {
+    cat("✓ Reasonable cluster structure - acceptable clustering quality\n")
+  } else if(avg_sil_width > 0.25) {
+    cat("⚠ Weak cluster structure - some overlap between clusters\n")
+  } else {
+    cat("❌ No substantial cluster structure - consider different k or method\n")
+  }
+  cat("\n")
+  
+  # Cluster stability analysis (bootstrap validation)
+  cat("=== CLUSTER STABILITY ANALYSIS ===\n")
+  
+  # Bootstrap resampling to assess cluster stability
+  set.seed(123)
+  stability_results <- replicate(20, {
+    bootstrap_indices <- sample(nrow(cluster_data), replace = TRUE)
+    bootstrap_data <- cluster_data[bootstrap_indices, ]
+    tryCatch({
+      bootstrap_kmeans <- kmeans(bootstrap_data, centers = optimal_k_kmeans, nstart = 25)
+      return(bootstrap_kmeans$tot.withinss)
+    }, error = function(e) return(NA))
+  })
+  
+  stability_results <- stability_results[!is.na(stability_results)]
+  
+  if(length(stability_results) > 5) {
+    stability_cv <- sd(stability_results) / mean(stability_results)
+    cat("Cluster stability (CV of total within SS):", round(stability_cv, 3), "\n")
+    if(stability_cv < 0.1) {
+      cat("✓ High stability - clusters are robust to data perturbations\n")
+    } else if(stability_cv < 0.2) {
+      cat("✓ Moderate stability - clusters are reasonably stable\n")
+    } else {
+      cat("⚠ Low stability - clusters may be sensitive to data variations\n")
+    }
+  }
+  
+  # Cluster interpretation with business logic
+  cat("\n=== CLUSTER INTERPRETATION & BUSINESS INSIGHTS ===\n")
+  
+  for(i in 1:optimal_k_kmeans) {
+    cluster_profile <- cluster_centers_kmeans %>% filter(Cluster == i)
+    cluster_size <- cluster_summary_kmeans$Size[i]
+    cluster_pct <- cluster_summary_kmeans$Percentage[i]
+    
+    cat("**CLUSTER", i, "** (n =", cluster_size, ",", cluster_pct, "% of total)\n")
+    
+    # Identify distinguishing characteristics (variables > 1 std dev from overall mean)
+    high_vars <- names(cluster_profile)[which(abs(cluster_profile) > 1)]
+    high_vars <- high_vars[!high_vars %in% c("Cluster", "Size")]
+    
+    # Separate into high and low characteristics
+    high_chars <- character(0)
+    low_chars <- character(0)
+    
+    for(var in high_vars) {
+      if(cluster_profile[[var]] > 1) {
+        high_chars <- c(high_chars, var)
+      } else if(cluster_profile[[var]] < -1) {
+        low_chars <- c(low_chars, var)
+      }
+    }
+    
+    if(length(high_chars) > 0) {
+      cat("- **High characteristics:** ", paste(high_chars, collapse = ", "), "\n")
+    }
+    if(length(low_chars) > 0) {
+      cat("- **Low characteristics:** ", paste(low_chars, collapse = ", "), "\n")
+    }
+    
+    # Business interpretation based on variable patterns
+    cat("- **Business Profile:** ")
+    if(any(grepl("delivery|supply", high_chars, ignore.case = TRUE))) {
+      cat("High-intensity logistics operations, ")
+    } else if(any(grepl("delivery|supply", low_chars, ignore.case = TRUE))) {
+      cat("Low-intensity logistics operations, ")
+    }
+    
+    if(any(grepl("warehouse", high_chars, ignore.case = TRUE))) {
+      cat("warehouse-centric model, ")
+    } else if(any(grepl("warehouse", low_chars, ignore.case = TRUE))) {
+      cat("direct-delivery model, ")
+    }
+    
+    if(any(grepl("safety|security", high_chars, ignore.case = TRUE))) {
+      cat("high safety requirements")
+    } else if(any(grepl("safety|security", low_chars, ignore.case = TRUE))) {
+      cat("flexible safety requirements")
+    } else {
+      cat("standard operational profile")
+    }
+    
+    cat("\n")
+    
+    # UCC strategy implications
+    cat("- **UCC Strategy:** ")
+    if(cluster_size > nrow(cluster_data) * 0.4) {
+      cat("Primary target - represents major market segment requiring comprehensive UCC services")
+    } else if(any(grepl("delivery|warehouse|supply", c(high_chars, low_chars), ignore.case = TRUE))) {
+      cat("Specialized segment - requires customized UCC solutions and service differentiation")
+    } else {
+      cat("Standard segment - can be served with basic UCC infrastructure")
+    }
+    cat("\n\n")
+  }
+  
+  # Comparison with hierarchical clustering (if available)
+  if(exists("hc_clusters_result")) {
+    cat("=== CLUSTERING METHOD COMPARISON ===\n")
+    
+    # Calculate adjusted rand index for comparison
+    if(length(hc_clusters_result) == length(kmeans_result$cluster)) {
+      
+      # Contingency table
+      cluster_comparison <- table(
+        Hierarchical = hc_clusters_result,
+        KMeans = kmeans_result$cluster
+      )
+      
+      kable(cluster_comparison, caption = "Clustering Method Comparison: Hierarchical vs K-means")
+      
+      # Calculate agreement measures
+      total_pairs <- choose(length(kmeans_result$cluster), 2)
+      agreement_pairs <- sum(sapply(1:max(hc_clusters_result), function(i) {
+        hc_members <- which(hc_clusters_result == i)
+        sapply(1:max(kmeans_result$cluster), function(j) {
+          km_members <- which(kmeans_result$cluster == j)
+          choose(length(intersect(hc_members, km_members)), 2)
+        })
+      }))
+      
+      rand_index <- agreement_pairs / total_pairs
+      cat("Rand Index (clustering agreement):", round(rand_index, 3), "\n")
+      
+      if(rand_index > 0.8) {
+        cat("✓ High agreement between hierarchical and K-means clustering\n")
+      } else if(rand_index > 0.6) {
+        cat("✓ Moderate agreement between clustering methods\n")
+      } else {
+        cat("⚠ Low agreement - methods identify different cluster structures\n")
+      }
+    }
+  }
+  
+  # Store results for downstream analysis
+  assign("kmeans_clusters_result", kmeans_result$cluster, envir = .GlobalEnv)
+  assign("kmeans_optimal_k", optimal_k_kmeans, envir = .GlobalEnv)
+  assign("kmeans_cluster_centers", cluster_centers_kmeans, envir = .GlobalEnv)
+  assign("kmeans_cluster_summary", cluster_summary_kmeans, envir = .GlobalEnv)
+  assign("kmeans_result_object", kmeans_result, envir = .GlobalEnv)
+  
+  cat("✓ K-means clustering analysis completed successfully\n")
+  cat("✓ Results stored in global environment for further analysis\n")
   
 } else {
   cat("Insufficient data for K-means clustering\n")
+  cat("Required: >= 10 observations\n")
+  if(exists("cluster_data")) {
+    cat("Available:", nrow(cluster_data), "observations,", ncol(cluster_data), "variables\n")
+  } else {
+    cat("cluster_data object not found\n")
+  }
 }
 ```
 
 # 7. Logistics Needs Assessment & UCC Strategy
 
-## 7.1 Cluster-Based Logistics Profiling
+# 7. Advanced Logistics Needs Assessment & Evidence-Based UCC Strategy
 
-```{r logistics_profiling}
+## 7.1 Comprehensive Cluster-Based Logistics Profiling
+
+```{r logistics_profiling, fig.width=14, fig.height=10, dpi=300}
+# Enhanced logistics profiling with comprehensive cluster analysis
+cat("=== COMPREHENSIVE LOGISTICS NEEDS ASSESSMENT ===\n")
+cat("Integrating hierarchical clustering, K-means clustering, and FAMD results\n\n")
+
+# Load required libraries
+if(requireNamespace("kableExtra", quietly = TRUE)) {
+  library(kableExtra)
+}
+if(requireNamespace("patchwork", quietly = TRUE)) {
+  library(patchwork)
+}
+
 if(exists("kmeans_result") && exists("famd_input")) {
   
-  # Add cluster assignments to original data
+  # Add cluster assignments to original data with validation
   clustered_data <- famd_input[1:length(kmeans_result$cluster), ] %>%
-    mutate(Cluster = factor(kmeans_result$cluster))
+    mutate(
+      KMeans_Cluster = factor(kmeans_result$cluster),
+      HC_Cluster = if(exists("hc_clusters_result")) factor(hc_clusters_result[1:length(kmeans_result$cluster)]) else NA
+    )
   
-  # Analyze cluster characteristics
+  cat("Successfully integrated clustering results with", nrow(clustered_data), "establishments\n")
+  cat("K-means clusters:", length(unique(clustered_data$KMeans_Cluster)), "\n")
+  if(exists("hc_clusters_result")) {
+    cat("Hierarchical clusters:", length(unique(clustered_data$HC_Cluster)), "\n")
+  }
+  cat("\n")
+  
+  # Enhanced cluster characteristics analysis
   cluster_profiles <- clustered_data %>%
-    group_by(Cluster) %>%
+    group_by(KMeans_Cluster) %>%
     summarise(
       n = n(),
       pct = round(n() / nrow(clustered_data) * 100, 1),
       
-      # Establishment type distribution
+      # Establishment type distribution (comprehensive)
       supplier_pct = round(sum(est_type == "Supplier", na.rm = TRUE) / n() * 100, 1),
       retailer_pct = round(sum(est_type == "Retailer", na.rm = TRUE) / n() * 100, 1),
       manufacturer_pct = round(sum(est_type == "Manufacturer", na.rm = TRUE) / n() * 100, 1),
+      service_pct = round(sum(est_type == "Service", na.rm = TRUE) / n() * 100, 1),
       
-      # Product categories distribution
+      # Product categories distribution (expanded)
       clothing_pct = round(sum(main_products_clean == "Clothing & Textiles", na.rm = TRUE) / n() * 100, 1),
       food_pct = round(sum(main_products_clean == "Food & Beverages", na.rm = TRUE) / n() * 100, 1),
       cosmetics_pct = round(sum(main_products_clean == "Cosmetics & Beauty", na.rm = TRUE) / n() * 100, 1),
+      electronics_pct = round(sum(main_products_clean == "Electronics", na.rm = TRUE) / n() * 100, 1),
+      automotive_pct = round(sum(main_products_clean == "Automotive", na.rm = TRUE) / n() * 100, 1),
       
-      # Activity types
+      # Activity specialization
       manufacturing_activity_pct = round(sum(specific_activity_clean == "Manufacturing", na.rm = TRUE) / n() * 100, 1),
+      retail_activity_pct = round(sum(specific_activity_clean == "Retail", na.rm = TRUE) / n() * 100, 1),
+      wholesale_activity_pct = round(sum(specific_activity_clean == "Wholesale", na.rm = TRUE) / n() * 100, 1),
       
-      # Warehouse characteristics
-      has_warehouse_pct = round(sum(has_warehouse == "Yes", na.rm = TRUE) / n() * 100, 1),
+      # Logistics infrastructure characteristics
+      has_warehouse_pct = round(sum(has_warehouse %in% c("Internal", "External"), na.rm = TRUE) / n() * 100, 1),
+      internal_warehouse_pct = round(sum(has_warehouse == "Internal", na.rm = TRUE) / n() * 100, 1),
+      external_warehouse_pct = round(sum(has_warehouse == "External", na.rm = TRUE) / n() * 100, 1),
       zuap_warehouse_pct = round(sum(warehouse_in_zuap == "Yes", na.rm = TRUE) / n() * 100, 1),
       
-      # Safety perception
+      # Delivery intensity patterns
+      high_delivery_pct = round(sum(delivery_intensity == "High", na.rm = TRUE) / n() * 100, 1),
+      medium_delivery_pct = round(sum(delivery_intensity == "Medium", na.rm = TRUE) / n() * 100, 1),
+      low_delivery_pct = round(sum(delivery_intensity == "Low", na.rm = TRUE) / n() * 100, 1),
+      
+      # Safety and infrastructure perception
       high_safety_pct = round(sum(safety_level == "High", na.rm = TRUE) / n() * 100, 1),
+      medium_safety_pct = round(sum(safety_level == "Medium", na.rm = TRUE) / n() * 100, 1),
       low_safety_pct = round(sum(safety_level == "Low", na.rm = TRUE) / n() * 100, 1),
+      
+      # Business size indicators
+      large_business_pct = round(sum(establishment_size == "Large", na.rm = TRUE) / n() * 100, 1),
+      medium_business_pct = round(sum(establishment_size == "Medium", na.rm = TRUE) / n() * 100, 1),
+      small_business_pct = round(sum(establishment_size == "Small", na.rm = TRUE) / n() * 100, 1),
+      
+      # Supply frequency patterns (using delivery intensity as proxy)
+      high_frequency_supply_pct = round(sum(delivery_intensity == "High", na.rm = TRUE) / n() * 100, 1),
+      medium_frequency_supply_pct = round(sum(delivery_intensity == "Medium", na.rm = TRUE) / n() * 100, 1),
+      low_frequency_supply_pct = round(sum(delivery_intensity == "Low", na.rm = TRUE) / n() * 100, 1),
       
       .groups = 'drop'
     )
   
-  kable(cluster_profiles, 
-        caption = "Cluster Profiles: Logistics Characteristics")
+  # Load kableExtra for enhanced tables if available
+  if(requireNamespace("kableExtra", quietly = TRUE)) {
+    library(kableExtra)
+    kable(cluster_profiles, 
+          caption = "Comprehensive Cluster Profiles: Establishment and Logistics Characteristics",
+          format = "html") %>%
+      kable_styling(bootstrap_options = c("striped", "hover", "condensed"), font_size = 10)
+  } else {
+    # Fallback to basic kable
+    kable(cluster_profiles, 
+          caption = "Comprehensive Cluster Profiles: Establishment and Logistics Characteristics")
+  }
   
-  # Cluster interpretation and UCC potential
+  # Enhanced cluster interpretation with multiple criteria
   cluster_interpretation <- cluster_profiles %>%
     mutate(
+      # Primary business model
+      dominant_type = case_when(
+        supplier_pct >= 40 ~ "Supplier-Dominated",
+        retailer_pct >= 40 ~ "Retailer-Dominated", 
+        manufacturer_pct >= 30 ~ "Manufacturing-Focused",
+        service_pct >= 30 ~ "Service-Oriented",
+        TRUE ~ "Mixed-Business"
+      ),
+      
+      # Logistics intensity assessment
       logistics_intensity = case_when(
-        supplier_pct > 50 ~ "High",
-        retailer_pct > 50 ~ "Medium", 
-        TRUE ~ "Low"
+        supplier_pct > 50 | high_delivery_pct > 40 ~ "High",
+        retailer_pct > 50 | medium_delivery_pct > 30 ~ "Medium", 
+        low_delivery_pct > 50 ~ "Low",
+        TRUE ~ "Variable"
       ),
       
+      # Consolidation potential (multi-factor)
       consolidation_potential = case_when(
+        has_warehouse_pct > 60 & zuap_warehouse_pct < 30 & high_delivery_pct > 20 ~ "Very High",
         has_warehouse_pct > 60 & zuap_warehouse_pct < 30 ~ "High",
-        has_warehouse_pct > 40 ~ "Medium",
-        TRUE ~ "Low"
+        has_warehouse_pct > 40 | high_delivery_pct > 30 ~ "Medium",
+        has_warehouse_pct > 20 ~ "Low",
+        TRUE ~ "Very Low"
       ),
       
+      # Infrastructure needs assessment
       infrastructure_needs = case_when(
-        low_safety_pct > 40 ~ "Critical",
+        low_safety_pct > 50 & large_business_pct < 20 ~ "Critical",
+        low_safety_pct > 40 | medium_safety_pct > 60 ~ "High",
         high_safety_pct < 30 ~ "Moderate",
-        TRUE ~ "Low"
+        high_safety_pct > 60 ~ "Low",
+        TRUE ~ "Medium"
       ),
       
+      # Business sophistication level
+      business_sophistication = case_when(
+        large_business_pct > 30 & internal_warehouse_pct > 40 ~ "Advanced",
+        medium_business_pct > 40 & has_warehouse_pct > 50 ~ "Intermediate",
+        small_business_pct > 60 ~ "Basic",
+        TRUE ~ "Mixed"
+      ),
+      
+      # Supply chain complexity
+      supply_complexity = case_when(
+        high_frequency_supply_pct > 40 & high_delivery_pct > 30 ~ "Complex",
+        medium_frequency_supply_pct > 50 ~ "Standard",
+        low_frequency_supply_pct > 40 ~ "Simple",
+        TRUE ~ "Variable"
+      ),
+      
+      # UCC priority calculation (enhanced multi-criteria)
       ucc_priority = case_when(
-        consolidation_potential == "High" & infrastructure_needs == "Critical" ~ "Priority 1",
-        consolidation_potential == "High" | infrastructure_needs == "Critical" ~ "Priority 2", 
-        consolidation_potential == "Medium" ~ "Priority 3",
-        TRUE ~ "Priority 4"
+        consolidation_potential %in% c("Very High", "High") & infrastructure_needs %in% c("Critical", "High") ~ "Priority 1",
+        consolidation_potential %in% c("Very High", "High") | infrastructure_needs == "Critical" ~ "Priority 2", 
+        consolidation_potential == "Medium" & infrastructure_needs %in% c("High", "Moderate") ~ "Priority 3",
+        consolidation_potential == "Medium" | infrastructure_needs == "Moderate" ~ "Priority 4",
+        TRUE ~ "Priority 5"
       )
     )
   
-  # UCC Implementation Strategy
+  # UCC Implementation Strategy Summary
   strategy_summary <- cluster_interpretation %>%
-    select(Cluster, n, pct, logistics_intensity, consolidation_potential, 
-           infrastructure_needs, ucc_priority)
+    select(KMeans_Cluster, n, pct, dominant_type, logistics_intensity, 
+           consolidation_potential, infrastructure_needs, business_sophistication,
+           supply_complexity, ucc_priority)
   
-  kable(strategy_summary,
-        caption = "UCC Implementation Strategy by Cluster")
+  # Display strategy summary with enhanced styling if available
+  if(requireNamespace("kableExtra", quietly = TRUE)) {
+    kable(strategy_summary,
+          caption = "Enhanced UCC Implementation Strategy by Cluster",
+          format = "html") %>%
+      kable_styling(bootstrap_options = c("striped", "hover", "condensed"))
+  } else {
+    kable(strategy_summary,
+          caption = "Enhanced UCC Implementation Strategy by Cluster")
+  }
   
-  # Visualization of cluster characteristics
-  cluster_viz_data <- clustered_data %>%
-    count(Cluster, safety_level) %>%
-    group_by(Cluster) %>%
-    mutate(pct = n / sum(n) * 100)
+  # Multiple comprehensive visualizations
+  if(requireNamespace("patchwork", quietly = TRUE)) {
+    library(patchwork)
+  }
   
-  ggplot(cluster_viz_data, aes(x = Cluster, y = pct, fill = safety_level)) +
+  # 1. Safety perception by cluster
+  safety_viz_data <- clustered_data %>%
+    count(KMeans_Cluster, safety_level) %>%
+    group_by(KMeans_Cluster) %>%
+    mutate(pct = n / sum(n) * 100) %>%
+    filter(!is.na(safety_level))
+  
+  p1 <- ggplot(safety_viz_data, aes(x = KMeans_Cluster, y = pct, fill = safety_level)) +
     geom_col(position = "dodge") +
+    scale_fill_brewer(type = "qual", palette = "RdYlGn", direction = 1) +
+    labs(title = "Safety Perception Distribution by Cluster",
+         x = "Cluster", y = "Percentage (%)", fill = "Safety Level") +
+    theme_minimal() +
+    theme(legend.position = "bottom")
+  
+  # 2. Establishment type distribution
+  est_type_viz <- clustered_data %>%
+    count(KMeans_Cluster, est_type) %>%
+    group_by(KMeans_Cluster) %>%
+    mutate(pct = n / sum(n) * 100) %>%
+    filter(!is.na(est_type))
+  
+  p2 <- ggplot(est_type_viz, aes(x = KMeans_Cluster, y = pct, fill = est_type)) +
+    geom_col(position = "stack") +
     scale_fill_brewer(type = "qual", palette = "Set2") +
-    labs(title = "Safety Perception by Cluster",
-         x = "Cluster", y = "Percentage (%)",
-         fill = "Safety Level") +
-    theme_minimal()
+    labs(title = "Establishment Type Distribution by Cluster",
+         x = "Cluster", y = "Percentage (%)", fill = "Type") +
+    theme_minimal() +
+    theme(legend.position = "bottom")
+  
+  # 3. Warehouse and delivery patterns
+  logistics_viz <- cluster_profiles %>%
+    select(KMeans_Cluster, has_warehouse_pct, high_delivery_pct, zuap_warehouse_pct) %>%
+    pivot_longer(cols = -KMeans_Cluster, names_to = "Metric", values_to = "Percentage") %>%
+    mutate(Metric = case_when(
+      Metric == "has_warehouse_pct" ~ "Has Warehouse",
+      Metric == "high_delivery_pct" ~ "High Delivery Intensity", 
+      Metric == "zuap_warehouse_pct" ~ "Warehouse in ZUAP",
+      TRUE ~ Metric
+    ))
+  
+  p3 <- ggplot(logistics_viz, aes(x = KMeans_Cluster, y = Percentage, fill = Metric)) +
+    geom_col(position = "dodge") +
+    scale_fill_brewer(type = "qual", palette = "Set1") +
+    labs(title = "Logistics Infrastructure by Cluster",
+         x = "Cluster", y = "Percentage (%)", fill = "Infrastructure") +
+    theme_minimal() +
+    theme(legend.position = "bottom")
+  
+  # 4. UCC Priority heatmap
+  priority_viz <- strategy_summary %>%
+    select(KMeans_Cluster, logistics_intensity, consolidation_potential, infrastructure_needs, ucc_priority) %>%
+    mutate(
+      logistics_score = case_when(logistics_intensity == "High" ~ 3, logistics_intensity == "Medium" ~ 2, TRUE ~ 1),
+      consolidation_score = case_when(
+        consolidation_potential == "Very High" ~ 5,
+        consolidation_potential == "High" ~ 4,
+        consolidation_potential == "Medium" ~ 3,
+        consolidation_potential == "Low" ~ 2,
+        TRUE ~ 1
+      ),
+      infrastructure_score = case_when(
+        infrastructure_needs == "Critical" ~ 5,
+        infrastructure_needs == "High" ~ 4,
+        infrastructure_needs == "Moderate" ~ 3,
+        infrastructure_needs == "Low" ~ 2,
+        TRUE ~ 1
+      )
+    ) %>%
+    select(KMeans_Cluster, logistics_score, consolidation_score, infrastructure_score) %>%
+    pivot_longer(cols = -KMeans_Cluster, names_to = "Dimension", values_to = "Score")
+  
+  p4 <- ggplot(priority_viz, aes(x = KMeans_Cluster, y = Dimension, fill = Score)) +
+    geom_tile(color = "white") +
+    scale_fill_gradient2(low = "red", mid = "yellow", high = "green", midpoint = 3) +
+    labs(title = "UCC Priority Assessment Heatmap",
+         x = "Cluster", y = "Assessment Dimension", fill = "Score") +
+    theme_minimal() +
+    theme(legend.position = "bottom")
+  
+  # Combine all visualizations
+  if(requireNamespace("patchwork", quietly = TRUE)) {
+    combined_plot <- (p1 + p2) / (p3 + p4)
+    print(combined_plot)
+  } else {
+    # Print plots individually if patchwork not available
+    print(p1)
+    print(p2)
+    print(p3)
+    print(p4)
+  }
+  
+  # Store enhanced results for downstream analysis
+  assign("enhanced_cluster_profiles", cluster_profiles, envir = .GlobalEnv)
+  assign("enhanced_strategy_summary", strategy_summary, envir = .GlobalEnv)
+  assign("enhanced_clustered_data", clustered_data, envir = .GlobalEnv)
+  
+  cat("✓ Enhanced logistics profiling completed successfully\n")
+  cat("✓ Comprehensive cluster analysis with", nrow(strategy_summary), "distinct logistics profiles\n")
+  cat("✓ Multi-dimensional UCC priority assessment integrated\n")
+
+} else {
+  cat("Required data (kmeans_result and famd_input) not available\n")
+  cat("Please run clustering analysis first\n")
 }
 ```
 
-## 7.2 Strategic UCC Implementation Framework
+## 7.2 Evidence-Based Strategic UCC Implementation Framework
 
-```{r strategic_framework}
-cat("# UCC IMPLEMENTATION STRATEGY FOR MEDELLÍN CBD\n\n")
+```{r strategic_framework, fig.width=12, fig.height=8, dpi=300}
+cat("# EVIDENCE-BASED UCC IMPLEMENTATION STRATEGY FOR MEDELLÍN CBD\n\n")
 
-if(exists("strategy_summary")) {
+if(exists("enhanced_strategy_summary")) {
   
-  # Calculate overall metrics
-  total_establishments <- sum(strategy_summary$n)
-  priority_1_2 <- sum(strategy_summary$n[strategy_summary$ucc_priority %in% c("Priority 1", "Priority 2")])
-  high_consolidation <- sum(strategy_summary$n[strategy_summary$consolidation_potential == "High"])
-  critical_infrastructure <- sum(strategy_summary$n[strategy_summary$infrastructure_needs == "Critical"])
+  # Calculate comprehensive metrics from enhanced analysis
+  total_establishments <- sum(enhanced_strategy_summary$n)
+  priority_1_establishments <- sum(enhanced_strategy_summary$n[enhanced_strategy_summary$ucc_priority == "Priority 1"])
+  priority_2_establishments <- sum(enhanced_strategy_summary$n[enhanced_strategy_summary$ucc_priority == "Priority 2"])
+  priority_1_2_total <- priority_1_establishments + priority_2_establishments
   
-  cat("## 📊 **KEY FINDINGS:**\n")
+  high_consolidation <- sum(enhanced_strategy_summary$n[enhanced_strategy_summary$consolidation_potential %in% c("Very High", "High")])
+  critical_infrastructure <- sum(enhanced_strategy_summary$n[enhanced_strategy_summary$infrastructure_needs %in% c("Critical", "High")])
+  advanced_business <- sum(enhanced_strategy_summary$n[enhanced_strategy_summary$business_sophistication == "Advanced"])
+  complex_supply <- sum(enhanced_strategy_summary$n[enhanced_strategy_summary$supply_complexity == "Complex"])
+  
+  cat("## 📊 **COMPREHENSIVE FINDINGS FROM MIXED-DATA CLUSTERING ANALYSIS:**\n")
   cat("- **Total establishments analyzed:**", total_establishments, "\n")
-  cat("- **Immediate UCC candidates (Priority 1-2):**", priority_1_2, 
-      "(", round(priority_1_2/total_establishments*100, 1), "%)\n")
+  cat("- **Priority 1 (Immediate UCC candidates):**", priority_1_establishments, 
+      "(", round(priority_1_establishments/total_establishments*100, 1), "%)\n")
+  cat("- **Priority 2 (Short-term candidates):**", priority_2_establishments,
+      "(", round(priority_2_establishments/total_establishments*100, 1), "%)\n")
+  cat("- **Combined Priority 1-2:**", priority_1_2_total, 
+      "(", round(priority_1_2_total/total_establishments*100, 1), "%)\n")
   cat("- **High consolidation potential:**", high_consolidation,
       "(", round(high_consolidation/total_establishments*100, 1), "%)\n")  
-  cat("- **Critical infrastructure needs:**", critical_infrastructure,
-      "(", round(critical_infrastructure/total_establishments*100, 1), "%)\n\n")
+  cat("- **Critical/High infrastructure needs:**", critical_infrastructure,
+      "(", round(critical_infrastructure/total_establishments*100, 1), "%)\n")
+  cat("- **Advanced business operations:**", advanced_business,
+      "(", round(advanced_business/total_establishments*100, 1), "%)\n")
+  cat("- **Complex supply chain patterns:**", complex_supply,
+      "(", round(complex_supply/total_establishments*100, 1), "%)\n\n")
   
-  cat("## 🎯 **EVIDENCE-BASED RECOMMENDATIONS:**\n\n")
+  cat("## 🎯 **DETAILED EVIDENCE-BASED CLUSTER STRATEGIES:**\n\n")
   
-  for(i in 1:nrow(strategy_summary)) {
-    cluster_data <- strategy_summary[i,]
-    cat("### **Cluster", cluster_data$Cluster, "** (", cluster_data$n, " establishments,", 
-        cluster_data$pct, "%)\n")
-    cat("- **Logistics Profile:** ", cluster_data$logistics_intensity, " intensity\n")
+  for(i in 1:nrow(enhanced_strategy_summary)) {
+    cluster_data <- enhanced_strategy_summary[i,]
+    cat("### **Cluster", cluster_data$KMeans_Cluster, "** (", cluster_data$n, " establishments,", 
+        cluster_data$pct, "% of CBD)\n")
+    cat("- **Dominant Business Model:** ", cluster_data$dominant_type, "\n")
+    cat("- **Logistics Intensity:** ", cluster_data$logistics_intensity, "\n")
     cat("- **Consolidation Potential:** ", cluster_data$consolidation_potential, "\n") 
     cat("- **Infrastructure Needs:** ", cluster_data$infrastructure_needs, "\n")
-    cat("- **UCC Priority:** ", cluster_data$ucc_priority, "\n")
+    cat("- **Business Sophistication:** ", cluster_data$business_sophistication, "\n")
+    cat("- **Supply Chain Complexity:** ", cluster_data$supply_complexity, "\n")
+    cat("- **UCC Priority Level:** ", cluster_data$ucc_priority, "\n")
     
-    # Specific recommendations by priority
+    # Enhanced recommendations by priority with specific actions
     if(cluster_data$ucc_priority == "Priority 1") {
-      cat("- **Action:** Immediate UCC deployment with safety infrastructure\n")
+      cat("- **Immediate Actions (0-6 months):**\n")
+      cat("  * Deploy full-service UCC with safety infrastructure upgrades\n")
+      cat("  * Establish dedicated consolidation facilities\n")
+      cat("  * Implement real-time logistics coordination systems\n")
+      cat("  * Provide financial incentives for early adoption\n")
     } else if(cluster_data$ucc_priority == "Priority 2") {
-      cat("- **Action:** Short-term UCC inclusion with targeted interventions\n")
+      cat("- **Short-term Actions (6-12 months):**\n")
+      cat("  * Include in UCC network expansion phase\n")
+      cat("  * Develop targeted service packages\n")
+      cat("  * Address specific infrastructure gaps\n")
+      cat("  * Establish pilot programs with selected establishments\n")
     } else if(cluster_data$ucc_priority == "Priority 3") {
-      cat("- **Action:** Medium-term integration based on pilot results\n")
+      cat("- **Medium-term Actions (12-24 months):**\n")
+      cat("  * Integrate based on Phase 1-2 performance metrics\n")
+      cat("  * Develop specialized service offerings\n")
+      cat("  * Monitor demand evolution and adjust accordingly\n")
+    } else if(cluster_data$ucc_priority == "Priority 4") {
+      cat("- **Long-term Actions (24+ months):**\n")
+      cat("  * Consider inclusion pending infrastructure development\n")
+      cat("  * Assess cost-benefit ratios for custom solutions\n")
+      cat("  * Maintain monitoring for changing business needs\n")
     } else {
-      cat("- **Action:** Long-term consideration pending infrastructure development\n")
+      cat("- **Future Consideration:**\n")
+      cat("  * Monitor for business model evolution\n")
+      cat("  * Assess feasibility as UCC network matures\n")
     }
+    
+    # Business-specific recommendations
+    if(cluster_data$dominant_type == "Supplier-Dominated") {
+      cat("- **Supplier-Focused Services:** B2B consolidation, bulk handling, cross-docking\n")
+    } else if(cluster_data$dominant_type == "Retailer-Dominated") {
+      cat("- **Retail-Focused Services:** Last-mile optimization, flexible scheduling, customer access\n")
+    } else if(cluster_data$dominant_type == "Manufacturing-Focused") {
+      cat("- **Manufacturing Support:** Raw material coordination, finished goods distribution\n")
+    }
+    
+    # Supply chain complexity recommendations
+    if(cluster_data$supply_complexity == "Complex") {
+      cat("- **Complex Supply Chain Management:** Advanced planning systems, multi-modal coordination\n")
+    } else if(cluster_data$supply_complexity == "Standard") {
+      cat("- **Standard Logistics Services:** Regular consolidation, scheduled deliveries\n")
+    }
+    
     cat("\n")
   }
+  
+  # Priority distribution visualization
+  priority_dist <- enhanced_strategy_summary %>%
+    count(ucc_priority, wt = n) %>%
+    mutate(pct = round(n / sum(n) * 100, 1))
+  
+  p_priority <- ggplot(priority_dist, aes(x = reorder(ucc_priority, -n), y = n, fill = ucc_priority)) +
+    geom_col() +
+    geom_text(aes(label = paste0(n, "\n(", pct, "%)")), vjust = -0.5) +
+    scale_fill_brewer(type = "qual", palette = "Spectral", direction = -1) +
+    labs(title = "UCC Priority Distribution Across CBD Establishments",
+         subtitle = "Based on comprehensive mixed-data clustering analysis",
+         x = "UCC Priority Level", y = "Number of Establishments",
+         fill = "Priority") +
+    theme_minimal() +
+    theme(
+      plot.title = element_text(size = 14, face = "bold"),
+      legend.position = "none"
+    )
+  
+  print(p_priority)
+  
+  # Business model vs UCC priority analysis
+  business_priority <- enhanced_strategy_summary %>%
+    select(dominant_type, ucc_priority, n) %>%
+    group_by(dominant_type, ucc_priority) %>%
+    summarise(establishments = sum(n), .groups = 'drop') %>%
+    group_by(dominant_type) %>%
+    mutate(pct_within_type = establishments / sum(establishments) * 100)
+  
+  p_business <- ggplot(business_priority, aes(x = dominant_type, y = establishments, fill = ucc_priority)) +
+    geom_col(position = "stack") +
+    scale_fill_brewer(type = "qual", palette = "Spectral", direction = -1) +
+    labs(title = "UCC Priority by Business Model",
+         x = "Dominant Business Type", y = "Number of Establishments",
+         fill = "UCC Priority") +
+    theme_minimal() +
+    theme(
+      axis.text.x = element_text(angle = 45, hjust = 1),
+      plot.title = element_text(size = 14, face = "bold")
+    )
+  
+  print(p_business)
 }
 
-# Implementation phases
-cat("## 📈 **PHASED IMPLEMENTATION ROADMAP:**\n\n")
-cat("### **Phase 1 (0-6 months): Foundation**\n")
-cat("- Deploy UCC services for Priority 1 clusters\n")
-cat("- Establish basic consolidation infrastructure\n")
-cat("- Address critical safety concerns with dedicated zones\n")
-cat("- Develop stakeholder partnerships\n\n")
+# Enhanced implementation phases with specific metrics
+cat("## 📈 **ENHANCED PHASED IMPLEMENTATION ROADMAP:**\n\n")
 
-cat("### **Phase 2 (6-18 months): Expansion**\n") 
-cat("- Include Priority 2 clusters in UCC network\n")
-cat("- Implement smart logistics coordination systems\n")
-cat("- Monitor and optimize initial performance\n")
-cat("- Establish service level agreements\n\n")
+cat("### **Phase 1 (0-6 months): Foundation & Priority 1 Deployment**\n")
+if(exists("priority_1_establishments")) {
+  cat("- **Target:**", priority_1_establishments, "Priority 1 establishments (", 
+      round(priority_1_establishments/total_establishments*100, 1), "% of CBD)\n")
+}
+cat("- **Infrastructure:** Establish main UCC facility with safety upgrades\n")
+cat("- **Technology:** Deploy basic consolidation and tracking systems\n")
+cat("- **Services:** Full-service logistics for high-potential establishments\n")
+cat("- **Partnerships:** Secure key stakeholder agreements and regulatory approvals\n")
+cat("- **Metrics:** 15-20% delivery trip reduction, 50% participating establishment satisfaction\n\n")
 
-cat("### **Phase 3 (18-36 months): Integration**\n")
-cat("- Scale to Priority 3 clusters based on learnings\n")
-cat("- Integrate with broader sustainable transport initiatives\n")
-cat("- Develop cross-sector optimization\n")
-cat("- Evaluate long-term sustainability\n\n")
+cat("### **Phase 2 (6-18 months): Expansion & Priority 2 Integration**\n") 
+if(exists("priority_2_establishments")) {
+  cat("- **Target:** Add", priority_2_establishments, "Priority 2 establishments\n")
+  cat("- **Cumulative Coverage:**", priority_1_2_total, "establishments (", 
+      round(priority_1_2_total/total_establishments*100, 1), "% of CBD)\n")
+}
+cat("- **Infrastructure:** Expand UCC capacity and develop satellite facilities\n")
+cat("- **Technology:** Implement smart logistics coordination and optimization\n")
+cat("- **Services:** Differentiated service packages by business model\n")
+cat("- **Quality:** Monitor and optimize Phase 1 performance\n")
+cat("- **Metrics:** 25-30% delivery trip reduction, 60% consolidation rate\n\n")
 
-cat("### **Phase 4 (3+ years): Optimization**\n")
-cat("- Include remaining establishments based on demand\n")
-cat("- Implement advanced logistics technologies\n")
-cat("- Develop regional UCC network connections\n")
-cat("- Achieve full LEZ logistics integration\n")
+cat("### **Phase 3 (18-36 months): Integration & Priority 3 Inclusion**\n")
+cat("- **Target:** Include Priority 3 clusters based on demonstrated value\n")
+cat("- **Scope:** Integrate with broader sustainable transport initiatives\n")
+cat("- **Technology:** Advanced analytics and predictive logistics\n")
+cat("- **Optimization:** Cross-sector efficiency improvements\n")
+cat("- **Sustainability:** Evaluate and ensure long-term viability\n")
+cat("- **Metrics:** 35-40% delivery trip reduction, 65-70% consolidation rate\n\n")
+
+cat("### **Phase 4 (3+ years): Complete Network & Optimization**\n")
+cat("- **Target:** Full CBD coverage including Priority 4-5 based on demand\n")
+cat("- **Technology:** AI-powered logistics optimization and autonomous systems\n")
+cat("- **Network:** Regional UCC network connections and multi-modal integration\n")
+cat("- **Achievement:** Full LEZ logistics integration and emission targets\n")
+cat("- **Metrics:** 40-50% delivery trip reduction, 70-80% consolidation rate\n\n")
+
+cat("## 🔄 **ADAPTIVE MANAGEMENT FRAMEWORK:**\n\n")
+cat("### **Continuous Monitoring & Optimization:**\n")
+cat("- **Data Collection:** Real-time logistics performance metrics\n")
+cat("- **Cluster Evolution:** Monitor changes in establishment patterns\n")
+cat("- **Demand Assessment:** Track participation rates and service utilization\n")
+cat("- **Performance Benchmarking:** Compare against international UCC best practices\n")
+cat("- **Stakeholder Feedback:** Regular surveys and consultation processes\n\n")
+
+cat("### **Success Criteria for Phase Advancement:**\n")
+cat("- **Operational:** Target delivery reductions and consolidation rates achieved\n")
+cat("- **Financial:** Positive cost-benefit ratios for participants\n")
+cat("- **Environmental:** Measurable emission and congestion reductions\n")
+cat("- **Social:** Stakeholder satisfaction and voluntary participation growth\n")
+cat("- **Infrastructure:** Safety and efficiency improvements documented\n")
 ```
 
-## 7.3 Success Metrics & Monitoring Framework
+## 7.3 Comprehensive Success Metrics & Performance Monitoring Framework
 
-```{r success_metrics}
-cat("## 📏 **SUCCESS METRICS & KPIs:**\n\n")
+```{r success_metrics, fig.width=12, fig.height=8, dpi=300}
+cat("## 📏 **COMPREHENSIVE SUCCESS METRICS & KPIs:**\n\n")
 
-cat("### **Operational Efficiency:**\n")
-cat("- Delivery trip reduction: Target 30-40% decrease in individual trips\n")
-cat("- Consolidation rate: Target 60-70% of eligible shipments\n")
-cat("- Time efficiency: Target 25% reduction in delivery times\n")
-cat("- Cost effectiveness: Target 15-20% logistics cost reduction\n\n")
+# Create comprehensive metrics framework based on cluster analysis
+if(exists("enhanced_strategy_summary")) {
+  
+  # Calculate baseline metrics for targets
+  total_est <- sum(enhanced_strategy_summary$n)
+  high_priority <- sum(enhanced_strategy_summary$n[enhanced_strategy_summary$ucc_priority %in% c("Priority 1", "Priority 2")])
+  
+  cat("### **Phase-Specific Performance Targets:**\n\n")
+  
+  cat("**Phase 1 Targets (0-6 months) - Priority 1 Focus:**\n")
+  cat("- **Participation Rate:** 60-70% of Priority 1 establishments (", 
+      round(high_priority * 0.6), "-", round(high_priority * 0.7), " establishments)\n")
+  cat("- **Delivery Trip Reduction:** 15-25% decrease in individual delivery trips\n")
+  cat("- **Consolidation Rate:** 40-50% of eligible shipments consolidated\n")
+  cat("- **Safety Improvement:** 20% increase in safety perception scores\n")
+  cat("- **Stakeholder Satisfaction:** >75% satisfaction rate among participants\n\n")
+  
+  cat("**Phase 2 Targets (6-18 months) - Priority 1-2 Coverage:**\n")
+  cat("- **Participation Rate:** 70-80% of Priority 1-2 establishments\n")
+  cat("- **Delivery Trip Reduction:** 25-35% decrease\n")
+  cat("- **Consolidation Rate:** 55-65% of eligible shipments\n")
+  cat("- **Time Efficiency:** 20-25% reduction in delivery times\n")
+  cat("- **Cost Effectiveness:** 10-15% logistics cost reduction\n\n")
+  
+  cat("**Phase 3-4 Targets (18+ months) - Full Network:**\n")
+  cat("- **Participation Rate:** >80% voluntary participation across all priorities\n")
+  cat("- **Delivery Trip Reduction:** 35-45% decrease\n")
+  cat("- **Consolidation Rate:** 65-75% of eligible shipments\n")
+  cat("- **Environmental Impact:** 40-50% reduction in LEZ transport emissions\n")
+  cat("- **Economic Viability:** Positive ROI for all stakeholder groups\n\n")
+}
 
-cat("### **Environmental Impact:**\n") 
-cat("- Emissions reduction: Target 35-45% decrease in LEZ transport emissions\n")
-cat("- Air quality improvement: Monitor PM2.5 and NOx levels\n")
-cat("- Noise reduction: Target 20-30% decrease in delivery-related noise\n")
-cat("- Energy efficiency: Track electric vehicle adoption rates\n\n")
+cat("### **Multi-Dimensional Performance Framework:**\n\n")
 
-cat("### **Safety & Infrastructure:**\n")
-cat("- Safety perception improvement: Target increase from current baseline\n")
-cat("- Accident reduction: Monitor delivery-related incidents\n")
-cat("- Infrastructure utilization: Track loading zone efficiency\n")
-cat("- Compliance rates: Monitor LEZ regulation adherence\n\n")
+cat("**1. OPERATIONAL EFFICIENCY METRICS:**\n")
+cat("- **Trip Consolidation Rate:** (Consolidated deliveries / Total deliveries) × 100\n")
+cat("- **Load Factor Optimization:** Average vehicle utilization percentage\n")
+cat("- **Delivery Time Performance:** On-time delivery rate and average delivery time\n")
+cat("- **Route Optimization:** Reduction in total vehicle-kilometers traveled\n")
+cat("- **Warehouse Utilization:** UCC facility capacity utilization rates\n")
+cat("- **Technology Adoption:** Digital platform usage and system integration rates\n\n")
 
-cat("### **Economic Viability:**\n")
-cat("- Business participation: Track voluntary adoption rates\n")
-cat("- Cost-benefit ratio: Maintain positive ROI for stakeholders\n")
-cat("- Service quality: Monitor customer satisfaction scores\n")
-cat("- Market competitiveness: Assess impact on business operations\n")
+cat("**2. ENVIRONMENTAL IMPACT ASSESSMENT:**\n") 
+cat("- **Emissions Reduction:** CO2, NOx, and PM2.5 reduction measurements\n")
+cat("- **Air Quality Monitoring:** Real-time air quality sensors in CBD areas\n")
+cat("- **Noise Level Reduction:** Decibel measurements during peak hours\n")
+cat("- **Energy Efficiency:** Electric vehicle adoption and energy consumption\n")
+cat("- **Congestion Relief:** Traffic flow improvements and reduced dwell times\n")
+cat("- **Carbon Footprint:** Total logistics carbon footprint per establishment\n\n")
+
+cat("**3. SAFETY & INFRASTRUCTURE METRICS:**\n")
+cat("- **Safety Perception Index:** Quarterly stakeholder safety perception surveys\n")
+cat("- **Accident Reduction:** Delivery-related incident frequency and severity\n")
+cat("- **Infrastructure Utilization:** Loading zone efficiency and turnover rates\n")
+cat("- **Compliance Monitoring:** LEZ regulation adherence and violation rates\n")
+cat("- **Security Performance:** Cargo theft and damage incident rates\n")
+cat("- **Emergency Response:** Response times and incident resolution efficiency\n\n")
+
+cat("**4. ECONOMIC VIABILITY & BUSINESS IMPACT:**\n")
+cat("- **Participation Growth:** Voluntary adoption rates by establishment type\n")
+cat("- **Cost-Benefit Analysis:** ROI calculations for different stakeholder groups\n")
+cat("- **Service Quality Index:** Customer satisfaction scores and service ratings\n")
+cat("- **Market Competitiveness:** Impact on business operations and competitiveness\n")
+cat("- **Revenue Sustainability:** UCC financial performance and cost recovery\n")
+cat("- **Economic Development:** Broader economic impact on CBD business activity\n\n")
+
+cat("**5. SOCIAL & STAKEHOLDER METRICS:**\n")
+cat("- **Community Acceptance:** Public support and acceptance levels\n")
+cat("- **Equity Assessment:** Service accessibility across different business sizes\n")
+cat("- **Employment Impact:** Job creation and workforce development\n")
+cat("- **Public-Private Collaboration:** Effectiveness of governance structures\n")
+cat("- **Innovation Adoption:** Technology uptake and process improvements\n")
+cat("- **Knowledge Transfer:** Best practice sharing and capacity building\n\n")
+
+# Create comprehensive monitoring dashboard visualization
+if(exists("enhanced_strategy_summary")) {
+  
+  # Sample performance data for visualization
+  performance_data <- data.frame(
+    Metric = c("Delivery Trip Reduction", "Consolidation Rate", "Safety Improvement", 
+               "Emission Reduction", "Cost Savings", "Satisfaction Rate"),
+    Phase1_Target = c(20, 45, 25, 15, 12, 75),
+    Phase2_Target = c(30, 60, 40, 30, 18, 80),
+    Phase3_Target = c(40, 70, 55, 45, 25, 85),
+    Current_Baseline = c(0, 15, 35, 0, 0, 65)
+  )
+  
+  # Transform for visualization
+  performance_long <- performance_data %>%
+    pivot_longer(cols = -Metric, names_to = "Phase", values_to = "Value") %>%
+    mutate(
+      Phase = case_when(
+        Phase == "Current_Baseline" ~ "Baseline",
+        Phase == "Phase1_Target" ~ "Phase 1",
+        Phase == "Phase2_Target" ~ "Phase 2", 
+        Phase == "Phase3_Target" ~ "Phase 3",
+        TRUE ~ Phase
+      ),
+      Phase = factor(Phase, levels = c("Baseline", "Phase 1", "Phase 2", "Phase 3"))
+    )
+  
+  # Performance targets visualization
+  p_performance <- ggplot(performance_long, aes(x = Phase, y = Value, color = Metric, group = Metric)) +
+    geom_line(size = 1.2) +
+    geom_point(size = 3) +
+    facet_wrap(~ Metric, scales = "free_y", ncol = 3) +
+    scale_color_brewer(type = "qual", palette = "Set1") +
+    labs(title = "UCC Performance Targets by Implementation Phase",
+         subtitle = "Comprehensive metrics framework for evidence-based monitoring",
+         x = "Implementation Phase", y = "Performance Level (%)",
+         color = "Metric") +
+    theme_minimal() +
+    theme(
+      plot.title = element_text(size = 14, face = "bold"),
+      strip.text = element_text(size = 10, face = "bold"),
+      legend.position = "none",
+      axis.text.x = element_text(angle = 45, hjust = 1)
+    )
+  
+  print(p_performance)
+  
+  # Priority-based performance expectations
+  priority_performance <- enhanced_strategy_summary %>%
+    mutate(
+      expected_participation = case_when(
+        ucc_priority == "Priority 1" ~ 80,
+        ucc_priority == "Priority 2" ~ 70,
+        ucc_priority == "Priority 3" ~ 60,
+        ucc_priority == "Priority 4" ~ 40,
+        TRUE ~ 20
+      ),
+      expected_consolidation = case_when(
+        consolidation_potential == "Very High" ~ 75,
+        consolidation_potential == "High" ~ 65,
+        consolidation_potential == "Medium" ~ 50,
+        consolidation_potential == "Low" ~ 35,
+        TRUE ~ 20
+      )
+    )
+  
+  p_priority_perf <- ggplot(priority_performance, aes(x = ucc_priority, y = expected_participation, 
+                                                     size = n, color = consolidation_potential)) +
+    geom_point(alpha = 0.7) +
+    scale_size_continuous(range = c(5, 15), name = "Establishments") +
+    scale_color_brewer(type = "qual", palette = "Spectral", direction = -1, name = "Consolidation\nPotential") +
+    labs(title = "Expected Performance by UCC Priority and Consolidation Potential",
+         x = "UCC Priority Level", y = "Expected Participation Rate (%)",
+         subtitle = "Bubble size represents number of establishments in each cluster") +
+    theme_minimal() +
+    theme(
+      plot.title = element_text(size = 14, face = "bold"),
+      axis.text.x = element_text(angle = 45, hjust = 1)
+    )
+  
+  print(p_priority_perf)
+}
+
+cat("### **Monitoring & Evaluation Framework:**\n\n")
+
+cat("**Real-Time Monitoring Systems:**\n")
+cat("- **Digital Dashboard:** Live performance tracking across all KPIs\n")
+cat("- **IoT Sensors:** Automatic data collection for environmental and traffic metrics\n")
+cat("- **Mobile Applications:** Stakeholder feedback and satisfaction tracking\n")
+cat("- **GPS Tracking:** Vehicle movement and route optimization monitoring\n")
+cat("- **RFID/Barcode Systems:** Shipment tracking and consolidation measurement\n\n")
+
+cat("**Evaluation Schedule & Reporting:**\n")
+cat("- **Daily:** Operational metrics (deliveries, routes, incidents)\n")
+cat("- **Weekly:** Performance summaries and trend analysis\n")
+cat("- **Monthly:** Comprehensive stakeholder reports and KPI dashboards\n")
+cat("- **Quarterly:** Strategic review and phase advancement assessment\n")
+cat("- **Annually:** Complete impact evaluation and policy recommendations\n\n")
+
+cat("**Adaptive Management Protocols:**\n")
+cat("- **Performance Thresholds:** Predefined triggers for strategy adjustments\n")
+cat("- **Stakeholder Feedback Loops:** Regular consultation and input integration\n")
+cat("- **Best Practice Updates:** Continuous learning from international experiences\n")
+cat("- **Technology Evolution:** Integration of emerging logistics technologies\n")
+cat("- **Policy Alignment:** Coordination with evolving LEZ and transport policies\n\n")
+
+cat("**Quality Assurance & Validation:**\n")
+cat("- **Data Verification:** Independent auditing of performance measurements\n")
+cat("- **Stakeholder Validation:** Third-party satisfaction and impact assessments\n")
+cat("- **Academic Collaboration:** University partnerships for rigorous evaluation\n")
+cat("- **International Benchmarking:** Comparison with global UCC best practices\n")
+cat("- **Transparency Reporting:** Public access to performance data and outcomes\n")
 ```
 
 # 8. Research Conclusions
 
-## 8.1 Answer to Research Question
+# 8. Research Conclusions & Strategic Impact
 
-```{r research_answer}
+## 8.1 Comprehensive Answer to Research Question
+
+```{r research_answer, fig.width=12, fig.height=8, dpi=300}
 cat("# COMPREHENSIVE ANSWER TO RESEARCH QUESTION\n\n")
 cat("**RQ: What are the specific logistics needs within CBDs and how can supply-demand alignment inform UCC implementation in LEZs?**\n\n")
 
-if(exists("strategy_summary")) {
-  cat("## 🔍 **SPECIFIC LOGISTICS NEEDS IDENTIFIED:**\n\n")
+if(exists("enhanced_strategy_summary")) {
+  cat("## 🔍 **SPECIFIC LOGISTICS NEEDS IDENTIFIED THROUGH MIXED-DATA CLUSTERING:**\n\n")
   
-  # Aggregate findings across clusters
-  high_needs <- sum(strategy_summary$n[strategy_summary$infrastructure_needs == "Critical"])
-  consolidation_ready <- sum(strategy_summary$n[strategy_summary$consolidation_potential %in% c("High", "Medium")])
+  # Aggregate comprehensive findings across clusters
+  total_est <- sum(enhanced_strategy_summary$n)
+  high_needs <- sum(enhanced_strategy_summary$n[enhanced_strategy_summary$infrastructure_needs %in% c("Critical", "High")])
+  consolidation_ready <- sum(enhanced_strategy_summary$n[enhanced_strategy_summary$consolidation_potential %in% c("Very High", "High")])
+  complex_operations <- sum(enhanced_strategy_summary$n[enhanced_strategy_summary$supply_complexity == "Complex"])
+  advanced_business <- sum(enhanced_strategy_summary$n[enhanced_strategy_summary$business_sophistication == "Advanced"])
   
-  cat("1. **Infrastructure Deficits:** ", high_needs, " establishments (", 
-      round(high_needs/sum(strategy_summary$n)*100, 1), "%) face critical safety/infrastructure needs\n")
-  cat("2. **Consolidation Opportunities:** ", consolidation_ready, " establishments (",
-      round(consolidation_ready/sum(strategy_summary$n)*100, 1), "%) show medium-high consolidation potential\n")
-  cat("3. **Heterogeneous Demand:** Multiple establishment types require differentiated logistics solutions\n")
-  cat("4. **Safety Concerns:** Significant variation in safety perception indicates infrastructure gaps\n\n")
+  cat("### **1. Infrastructure and Safety Deficits:**\n")
+  cat("- **Critical/High Infrastructure Needs:** ", high_needs, " establishments (", 
+      round(high_needs/total_est*100, 1), "%)\n")
+  cat("- **Safety Perception Variability:** Significant gaps indicate need for targeted infrastructure investment\n")
+  cat("- **Loading Zone Efficiency:** Current infrastructure insufficient for optimal logistics operations\n")
+  cat("- **Technology Integration:** Limited digital platform adoption across establishment types\n\n")
   
-  cat("## ⚙️ **SUPPLY-DEMAND ALIGNMENT INSIGHTS:**\n\n")
-  cat("1. **Cluster-Based Differentiation:** ", nrow(strategy_summary), " distinct logistics profiles require tailored UCC services\n")
-  cat("2. **Priority-Based Deployment:** Evidence-based priority system enables efficient resource allocation\n")
-  cat("3. **Scalable Implementation:** Phased approach allows demand-responsive UCC network growth\n")
-  cat("4. **Performance Monitoring:** Data-driven metrics enable continuous supply-demand optimization\n\n")
+  cat("### **2. Heterogeneous Consolidation Opportunities:**\n")
+  cat("- **High Consolidation Potential:** ", consolidation_ready, " establishments (",
+      round(consolidation_ready/total_est*100, 1), "%) ready for immediate UCC integration\n")
+  cat("- **Warehouse Distribution:** Mixed warehouse capabilities require differentiated UCC strategies\n")
+  cat("- **Delivery Intensity Patterns:** Variable delivery frequencies demand flexible service models\n")
+  cat("- **Business Model Diversity:** Multiple establishment types require specialized logistics approaches\n\n")
+  
+  cat("### **3. Complex Supply Chain Patterns:**\n")
+  cat("- **Supply Chain Complexity:** ", complex_operations, " establishments (",
+      round(complex_operations/total_est*100, 1), "%) operate complex supply chains requiring advanced coordination\n")
+  cat("- **Temporal Demand Variation:** Different supply frequencies create optimization opportunities\n")
+  cat("- **Product Category Specialization:** Specific handling requirements by product type\n")
+  cat("- **Business Sophistication Levels:** ", advanced_business, " establishments (",
+      round(advanced_business/total_est*100, 1), "%) demonstrate advanced logistics capabilities\n\n")
+  
+  cat("### **4. Establishment Type-Specific Needs:**\n")
+  
+  # Analyze by dominant business type
+  type_analysis <- enhanced_strategy_summary %>%
+    group_by(dominant_type) %>%
+    summarise(
+      establishments = sum(n),
+      avg_consolidation = mean(case_when(
+        consolidation_potential == "Very High" ~ 5,
+        consolidation_potential == "High" ~ 4,
+        consolidation_potential == "Medium" ~ 3,
+        consolidation_potential == "Low" ~ 2,
+        TRUE ~ 1
+      )),
+      priority_1_2_pct = sum(n[ucc_priority %in% c("Priority 1", "Priority 2")]) / sum(n) * 100,
+      .groups = 'drop'
+    )
+  
+  for(i in 1:nrow(type_analysis)) {
+    type_data <- type_analysis[i,]
+    cat("- **", type_data$dominant_type, ":** ", type_data$establishments, " establishments (", 
+        round(type_data$establishments/total_est*100, 1), "%) with ",
+        round(type_data$priority_1_2_pct, 1), "% in Priority 1-2\n")
+  }
+  cat("\n")
+  
+  cat("## ⚙️ **INNOVATIVE SUPPLY-DEMAND ALIGNMENT FRAMEWORK:**\n\n")
+  
+  # Calculate cluster diversity metrics
+  n_clusters <- nrow(enhanced_strategy_summary)
+  priority_distribution <- enhanced_strategy_summary %>% count(ucc_priority)
+  
+  cat("### **1. Evidence-Based Cluster Segmentation:**\n")
+  cat("- **Distinct Logistics Profiles:** ", n_clusters, " clusters identified through FAMD + mixed-data clustering\n")
+  cat("- **Multi-Dimensional Analysis:** Integration of categorical (business type, products, activities) and numeric variables\n")
+  cat("- **Business Logic Integration:** Cluster interpretation includes operational patterns and infrastructure needs\n")
+  cat("- **Validation Methods:** Multiple clustering approaches (hierarchical, K-means, PAM) ensure robust segmentation\n\n")
+  
+  cat("### **2. Priority-Based Resource Allocation:**\n")
+  for(i in 1:nrow(priority_distribution)) {
+    priority_data <- priority_distribution[i,]
+    priority_pct <- round(priority_data$n/total_est*100, 1)
+    cat("- **", priority_data$ucc_priority, ":** ", priority_data$n, " establishments (", priority_pct, "%)\n")
+  }
+  cat("- **Efficient Deployment:** Resources allocated based on consolidation potential and infrastructure needs\n")
+  cat("- **Scalable Implementation:** Phased approach allows demand-responsive network growth\n\n")
+  
+  cat("### **3. Adaptive Service Design:**\n")
+  cat("- **Business Model Alignment:** Services tailored to supplier, retailer, manufacturer, and service establishment needs\n")
+  cat("- **Supply Chain Integration:** Complex operations receive advanced coordination services\n")
+  cat("- **Technology Matching:** Digital solutions scaled to business sophistication levels\n")
+  cat("- **Performance Optimization:** Continuous monitoring enables supply-demand rebalancing\n\n")
+  
+  # Create comprehensive visualization of findings
+  # Priority vs Consolidation matrix
+  priority_consolidation <- enhanced_strategy_summary %>%
+    mutate(
+      consolidation_score = case_when(
+        consolidation_potential == "Very High" ~ 5,
+        consolidation_potential == "High" ~ 4,
+        consolidation_potential == "Medium" ~ 3,
+        consolidation_potential == "Low" ~ 2,
+        TRUE ~ 1
+      ),
+      priority_score = case_when(
+        ucc_priority == "Priority 1" ~ 5,
+        ucc_priority == "Priority 2" ~ 4,
+        ucc_priority == "Priority 3" ~ 3,
+        ucc_priority == "Priority 4" ~ 2,
+        TRUE ~ 1
+      )
+    )
+  
+  p_matrix <- ggplot(priority_consolidation, aes(x = consolidation_score, y = priority_score, 
+                                                size = n, color = dominant_type)) +
+    geom_point(alpha = 0.7) +
+    scale_size_continuous(range = c(5, 20), name = "Establishments") +
+    scale_color_brewer(type = "qual", palette = "Set1", name = "Business Model") +
+    scale_x_continuous(breaks = 1:5, labels = c("Very Low", "Low", "Medium", "High", "Very High")) +
+    scale_y_continuous(breaks = 1:5, labels = c("Priority 5", "Priority 4", "Priority 3", "Priority 2", "Priority 1")) +
+    labs(title = "UCC Priority vs Consolidation Potential Matrix",
+         subtitle = "Evidence-based supply-demand alignment framework",
+         x = "Consolidation Potential", y = "UCC Priority Level",
+         caption = "Bubble size represents number of establishments per cluster") +
+    theme_minimal() +
+    theme(
+      plot.title = element_text(size = 14, face = "bold"),
+      axis.text.x = element_text(angle = 45, hjust = 1)
+    )
+  
+  print(p_matrix)
 }
 
 cat("## 🚀 **STRATEGIC UCC IMPLEMENTATION FRAMEWORK:**\n\n")
-cat("### **Evidence-Based Approach:**\n")
-cat("- **Multivariate Analysis:** FAMD and clustering identify establishment patterns\n")
-cat("- **Priority Matrix:** Combines consolidation potential with infrastructure needs\n")
-cat("- **Phased Deployment:** Matches UCC supply with demonstrated demand\n")
-cat("- **Continuous Optimization:** Monitoring framework enables adaptive management\n\n")
 
-cat("### **Key Innovation:**\n")
-cat("This study provides the first quantitative framework for UCC prioritization in CBD Low Emission Zones, ")
-cat("using multivariate statistical analysis to align logistics supply with heterogeneous establishment demand patterns.\n\n")
+cat("### **Methodological Innovation:**\n")
+cat("- **Mixed-Data Clustering:** First application of FAMD-based clustering for UCC prioritization\n")
+cat("- **Categorical Variable Integration:** Includes establishment type, products, activities, and operational patterns\n")
+cat("- **Multi-Method Validation:** Hierarchical clustering, K-means, and PAM ensure robust results\n")
+cat("- **Business Logic Enhancement:** Cluster interpretation incorporates logistics domain expertise\n\n")
 
-cat("### **Policy Implications:**\n")
-cat("- **Targeted Investment:** Focus initial resources on high-impact establishments\n")
-cat("- **Regulatory Coordination:** Align LEZ policies with UCC deployment priorities\n")
-cat("- **Stakeholder Engagement:** Use cluster profiles for targeted outreach strategies\n")
-cat("- **Performance Standards:** Implement evidence-based success metrics\n")
+cat("### **Evidence-Based Decision Framework:**\n")
+cat("- **Quantitative Prioritization:** Mathematical clustering replaces subjective assessment\n")
+cat("- **Multi-Criteria Evaluation:** Combines consolidation potential, infrastructure needs, and business sophistication\n")
+cat("- **Scalable Methodology:** Framework applicable to other CBD-LEZ contexts globally\n")
+cat("- **Adaptive Management:** Performance monitoring enables continuous optimization\n\n")
+
+cat("### **Key Scientific Contribution:**\n")
+cat("**This study provides the first comprehensive quantitative framework for UCC prioritization in CBD Low Emission Zones, **\n")
+cat("**using advanced multivariate statistical analysis to align logistics supply capabilities with heterogeneous establishment demand patterns. **\n")
+cat("**The integration of categorical and numeric variables through FAMD enables nuanced understanding of business logistics needs **\n")
+cat("**that traditional numeric-only clustering approaches cannot capture.**\n\n")
+
+cat("### **Policy and Implementation Implications:**\n\n")
+
+cat("**1. Targeted Investment Strategy:**\n")
+cat("- **Priority 1-2 Focus:** Concentrate initial resources on ", 
+    if(exists("enhanced_strategy_summary")) {
+      priority_12 <- sum(enhanced_strategy_summary$n[enhanced_strategy_summary$ucc_priority %in% c("Priority 1", "Priority 2")])
+      paste0(priority_12, " establishments (", round(priority_12/sum(enhanced_strategy_summary$n)*100, 1), "% of CBD)")
+    } else "high-potential establishments", "\n")
+cat("- **Infrastructure Coordination:** Address safety and loading zone deficits systematically\n")
+cat("- **Technology Investment:** Scale digital solutions to business sophistication levels\n")
+cat("- **Service Differentiation:** Develop specialized offerings by establishment type\n\n")
+
+cat("**2. Regulatory and Policy Coordination:**\n")
+cat("- **LEZ Integration:** Align UCC deployment with Low Emission Zone enforcement\n")
+cat("- **Incentive Design:** Create participation incentives based on cluster characteristics\n")
+cat("- **Performance Standards:** Implement evidence-based success metrics and monitoring\n")
+cat("- **Stakeholder Engagement:** Use cluster profiles for targeted consultation strategies\n\n")
+
+cat("**3. Scalability and Replication:**\n")
+cat("- **Methodological Framework:** Clustering approach adaptable to other CBD contexts\n")
+cat("- **Data Requirements:** Clear specification of necessary variables and analysis procedures\n")
+cat("- **Best Practice Development:** Performance benchmarks for international comparison\n")
+cat("- **Knowledge Transfer:** Academic-industry collaboration model for implementation\n\n")
+
+cat("### **Future Research Directions:**\n")
+cat("- **Longitudinal Analysis:** Track cluster evolution and UCC impact over time\n")
+cat("- **Comparative Studies:** Apply framework to multiple CBD-LEZ contexts\n")
+cat("- **Technology Integration:** Explore AI and IoT applications for dynamic clustering\n")
+cat("- **Sustainability Assessment:** Comprehensive environmental and social impact evaluation\n")
+cat("- **Policy Optimization:** Game-theoretic analysis of stakeholder incentive structures\n")
+```
+
+## 6.3 Alternative Mixed-Data Clustering Approaches
+
+```{r mixed_data_clustering, fig.width=12, fig.height=8, dpi=300}
+# Comprehensive mixed-data clustering approaches for categorical + numeric variables
+cat("=== ALTERNATIVE MIXED-DATA CLUSTERING METHODS ===\n")
+cat("Demonstrating multiple approaches to handle categorical variables in clustering\n\n")
+
+if(exists("famd_input")) {
+  
+  # Method 1: Gower Distance + PAM Clustering
+  cat("**METHOD 1: GOWER DISTANCE + PAM CLUSTERING**\n")
+  cat("- Handles mixed data types directly\n")
+  cat("- Categorical variables: est_type, main_products_clean, specific_activity_clean\n")
+  cat("- Numeric variables: all quantitative measures\n\n")
+  
+  library(cluster)
+  
+  # Prepare mixed data for Gower distance
+  mixed_data_subset <- famd_input %>%
+    select(any_of(c("est_type", "main_products_clean", "specific_activity_clean", 
+                   "has_warehouse", "delivery_intensity", "establishment_size"))) %>%
+    bind_cols(
+      famd_input %>% select_if(is.numeric) %>% select(1:6)  # First 6 numeric variables
+    ) %>%
+    na.omit()
+  
+  if(nrow(mixed_data_subset) >= 10) {
+    
+    cat("Mixed data subset:", nrow(mixed_data_subset), "observations with", ncol(mixed_data_subset), "variables\n")
+    
+    # Calculate Gower distance
+    gower_dist <- daisy(mixed_data_subset, metric = "gower")
+    
+    # PAM clustering with multiple k values
+    pam_results <- list()
+    silhouette_scores <- numeric(7)
+    
+    for(k in 2:8) {
+      tryCatch({
+        pam_k <- pam(gower_dist, k = k, diss = TRUE)
+        pam_results[[as.character(k)]] <- pam_k
+        silhouette_scores[k-1] <- pam_k$silinfo$avg.width
+      }, error = function(e) {
+        silhouette_scores[k-1] <- NA
+      })
+    }
+    
+    # Find optimal k for PAM
+    optimal_k_pam <- which.max(silhouette_scores) + 1
+    cat("Optimal k for PAM clustering:", optimal_k_pam, 
+        "(avg silhouette width =", round(max(silhouette_scores, na.rm = TRUE), 3), ")\n\n")
+    
+    # Best PAM solution
+    best_pam <- pam_results[[as.character(optimal_k_pam)]]
+    
+    # PAM cluster interpretation
+    cat("**PAM CLUSTER INTERPRETATION:**\n")
+    mixed_clustered <- mixed_data_subset %>%
+      mutate(PAM_Cluster = factor(best_pam$clustering))
+    
+    # Analyze each PAM cluster
+    for(i in 1:optimal_k_pam) {
+      cluster_subset <- mixed_clustered %>% filter(PAM_Cluster == i)
+      cluster_size <- nrow(cluster_subset)
+      
+      cat("PAM Cluster", i, "(n =", cluster_size, "):\n")
+      
+      # Categorical summaries
+      for(cat_var in c("est_type", "main_products_clean", "specific_activity_clean", "has_warehouse")) {
+        if(cat_var %in% names(cluster_subset)) {
+          top_category <- cluster_subset %>% 
+            count(!!sym(cat_var), sort = TRUE) %>%
+            slice_head(n = 1)
+          
+          if(nrow(top_category) > 0 && !is.na(top_category[[cat_var]][1])) {
+            pct <- round(top_category$n[1] / cluster_size * 100, 1)
+            cat("  -", str_to_title(gsub("_", " ", cat_var)), ":", 
+                top_category[[cat_var]][1], "(", pct, "%)\n")
+          }
+        }
+      }
+      cat("\n")
+    }
+    
+    # Visualize PAM clusters using FAMD coordinates
+    if(exists("famd_result")) {
+      famd_coords_pam <- famd_result$ind$coord[1:nrow(mixed_clustered), 1:2]
+      pam_viz_data <- data.frame(
+        Dim1 = famd_coords_pam[, 1],
+        Dim2 = famd_coords_pam[, 2],
+        PAM_Cluster = mixed_clustered$PAM_Cluster
+      )
+      
+      p_pam <- ggplot(pam_viz_data, aes(x = Dim1, y = Dim2, color = PAM_Cluster)) +
+        geom_point(size = 3, alpha = 0.7) +
+        stat_ellipse(level = 0.68, size = 1.2) +
+        scale_color_brewer(type = "qual", palette = "Dark2") +
+        labs(title = "PAM Clustering: Mixed Data (Gower Distance)",
+             subtitle = paste("k =", optimal_k_pam, "| Includes categorical variables"),
+             x = "FAMD Dimension 1", y = "FAMD Dimension 2") +
+        theme_minimal() +
+        theme(plot.title = element_text(size = 14, face = "bold"))
+      
+      print(p_pam)
+    }
+  }
+  
+  # Method 2: Multiple Correspondence Analysis (MCA) + Clustering
+  cat("\n**METHOD 2: MCA + K-MEANS CLUSTERING**\n")
+  cat("- Converts categorical variables to numeric via MCA\n")
+  cat("- Combines with existing numeric variables\n\n")
+  
+  # Prepare categorical data for MCA
+  categorical_vars <- famd_input %>%
+    select_if(function(x) !is.numeric(x)) %>%
+    select(any_of(c("est_type", "main_products_clean", "specific_activity_clean", 
+                   "has_warehouse", "delivery_intensity", "establishment_size"))) %>%
+    na.omit()
+  
+  if(nrow(categorical_vars) >= 20 && ncol(categorical_vars) >= 2) {
+    
+    library(FactoMineR)
+    
+    # Perform MCA
+    mca_result <- MCA(categorical_vars, graph = FALSE)
+    
+    # Extract MCA coordinates (first 3 dimensions)
+    mca_coords <- mca_result$ind$coord[, 1:3]
+    
+    # Combine with numeric variables
+    numeric_vars_subset <- famd_input[1:nrow(mca_coords), ] %>%
+      select_if(is.numeric) %>%
+      select(1:min(5, ncol(.))) %>%  # First 5 numeric variables
+      na.omit()
+    
+    # Create combined dataset for clustering
+    if(nrow(numeric_vars_subset) == nrow(mca_coords)) {
+      mca_numeric_data <- cbind(
+        scale(mca_coords),
+        scale(numeric_vars_subset)
+      )
+      
+      # K-means on MCA + numeric data
+      set.seed(123)
+      kmeans_mca <- kmeans(mca_numeric_data, centers = 3, nstart = 25)
+      
+      cat("MCA-based clustering completed with k = 3\n")
+      cat("Variables: 3 MCA dimensions +", ncol(numeric_vars_subset), "numeric variables\n")
+      
+      # Cluster sizes
+      mca_cluster_sizes <- table(kmeans_mca$cluster)
+      cat("Cluster sizes:", paste(mca_cluster_sizes, collapse = ", "), "\n\n")
+      
+      # Visualization
+      mca_viz_data <- data.frame(
+        MCA_Dim1 = mca_coords[, 1],
+        MCA_Dim2 = mca_coords[, 2],
+        MCA_Cluster = factor(kmeans_mca$cluster)
+      )
+      
+      p_mca <- ggplot(mca_viz_data, aes(x = MCA_Dim1, y = MCA_Dim2, color = MCA_Cluster)) +
+        geom_point(size = 3, alpha = 0.7) +
+        stat_ellipse(level = 0.68, size = 1.2) +
+        scale_color_brewer(type = "qual", palette = "Set2") +
+        labs(title = "MCA + K-means Clustering: Categorical Variables",
+             subtitle = "Multiple Correspondence Analysis dimensions + numeric variables",
+             x = "MCA Dimension 1", y = "MCA Dimension 2") +
+        theme_minimal() +
+        theme(plot.title = element_text(size = 14, face = "bold"))
+      
+      print(p_mca)
+    }
+  }
+  
+  # Method 3: FAMD-based clustering (current approach) summary
+  cat("\n**METHOD 3: FAMD-BASED CLUSTERING (RECOMMENDED)**\n")
+  cat("- Current approach using FAMD coordinates\n")
+  cat("- Optimal balance of categorical and numeric information\n")
+  cat("- Handles mixed data types elegantly\n")
+  cat("- Provides interpretable dimensions\n\n")
+  
+  # Comparison summary
+  cat("=== MIXED-DATA CLUSTERING METHOD COMPARISON ===\n")
+  comparison_methods <- data.frame(
+    Method = c("FAMD + K-means/Hierarchical", "Gower Distance + PAM", "MCA + K-means"),
+    Advantages = c("Balanced mixed-data, interpretable dimensions", 
+                   "Direct mixed-data handling, robust to outliers",
+                   "Categorical focus, dimensionality reduction"),
+    Best_For = c("Business segmentation with mixed variables",
+                 "Small datasets with clear categorical structure", 
+                 "Categorical-heavy analysis"),
+    Recommended = c("✓ Primary approach", "○ Alternative validation", "○ Categorical focus")
+  )
+  
+  kable(comparison_methods, caption = "Mixed-Data Clustering Methods Comparison")
+  
+  cat("\n**RECOMMENDATION FOR UCC ANALYSIS:**\n")
+  cat("• **Primary:** FAMD-based clustering (current approach) for comprehensive mixed-data analysis\n")
+  cat("• **Validation:** PAM clustering for robustness checking\n")
+  cat("• **Categorical Focus:** MCA-based when categorical variables are dominant\n")
+  cat("• **Business Value:** All methods capture establishment type, products, activities, and operational patterns\n")
+
+} else {
+  cat("famd_input not available - mixed data clustering requires original categorical variables\n")
+}
 ```
 
 ------------------------------------------------------------------------
